@@ -322,8 +322,8 @@ func TestFullModeResetRequiresSession(t *testing.T) {
 		t.Fatalf("invalid session reset response: %+v, %v", response, err)
 	}
 
-	getRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.fullModeResetPath})
-	response, err = runtime.handleManagement(getRequest)
+	deleteRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodDelete, Path: runtime.routes.fullModeResetPath})
+	response, err = runtime.handleManagement(deleteRequest)
 	if err != nil || response.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("wrong method reset response: %+v, %v", response, err)
 	}
@@ -334,6 +334,22 @@ func TestFullModeResetRequiresSession(t *testing.T) {
 	}
 	authorizedHeaders := headers.Clone()
 	authorizedHeaders.Set("X-Full-Mode-Session", session)
+
+	// Resource routes reach the plugin as GET, so the dashboard confirms the
+	// reset with a header instead of a JSON body.
+	getWithoutConfirm, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.fullModeResetPath, Headers: authorizedHeaders.Clone()})
+	response, err = runtime.handleManagement(getWithoutConfirm)
+	if err != nil || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("reset without confirmation header: %+v, %v", response, err)
+	}
+
+	getHeaders := authorizedHeaders.Clone()
+	getHeaders.Set("X-Confirm-Reset", "reset")
+	getConfirmed, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.fullModeResetPath, Headers: getHeaders})
+	response, err = runtime.handleManagement(getConfirmed)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"reset":true`) {
+		t.Fatalf("confirmed GET reset response: %+v, %v", response, err)
+	}
 	authorized, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.fullModeResetPath, Headers: authorizedHeaders, Body: body})
 	response, err = runtime.handleManagement(authorized)
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"reset":true`) {

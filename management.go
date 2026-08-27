@@ -267,13 +267,16 @@ func (r *pluginRuntime) dispatchManagement(request pluginapi.ManagementRequest, 
 		}
 		return r.fullModeRestoreResponse(request)
 	case routes.fullModeResetPath:
-		if !strings.EqualFold(request.Method, http.MethodPost) {
-			return methodNotAllowed(http.MethodPost), nil
+		// Resource routes are dispatched by the host as GET, so a POST-only reset
+		// never reaches the plugin and the host answers 404. Accept GET and keep
+		// POST for direct/plugin-level callers, mirroring the API key label route.
+		if !strings.EqualFold(request.Method, http.MethodGet) && !strings.EqualFold(request.Method, http.MethodPost) {
+			return methodNotAllowed(http.MethodGet), nil
 		}
 		if !r.validFullModeSession(fullModeSessionFromRequest(request)) {
 			return jsonResponse(http.StatusUnauthorized, map[string]string{"error": "full-mode session is missing or expired"}), nil
 		}
-		return r.resetResponse(request)
+		return r.fullModeResetResponse(request)
 	case routes.statsPath, routes.resourceStatsPath:
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
@@ -944,6 +947,27 @@ func (r *pluginRuntime) resetResponse(request pluginapi.ManagementRequest) (plug
 	if err := json.Unmarshal(request.Body, &confirmation); err != nil || confirmation.Confirm != "reset" {
 		return jsonResponse(http.StatusBadRequest, map[string]any{"error": `body must be {"confirm":"reset"}`}), nil
 	}
+	return r.performReset()
+}
+
+// fullModeResetResponse resets statistics for the full-mode dashboard. Resource
+// routes reach the plugin as GET requests without a body, so the confirmation
+// travels in a header the same way the restore route uses X-Confirm-Restore.
+func (r *pluginRuntime) fullModeResetResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	if request.Headers.Get("X-Confirm-Reset") == "reset" {
+		return r.performReset()
+	}
+	// Direct and plugin-level callers can still POST the JSON confirmation body.
+	var confirmation struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := json.Unmarshal(request.Body, &confirmation); err == nil && confirmation.Confirm == "reset" {
+		return r.performReset()
+	}
+	return jsonResponse(http.StatusBadRequest, map[string]string{"error": "missing X-Confirm-Reset: reset header"}), nil
+}
+
+func (r *pluginRuntime) performReset() (pluginapi.ManagementResponse, error) {
 	r.lifecycleMu.Lock()
 	defer r.lifecycleMu.Unlock()
 	r.mu.Lock()
