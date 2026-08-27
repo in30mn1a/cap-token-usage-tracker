@@ -14,6 +14,7 @@
   "range.lastSevenDays": "最近 7 天",
   "range.lastThirtyDays": "最近 30 天",
   "range.currentMonth": "當月",
+  "range.all": "全部",
   "range.resetToday": "重置為今天",
   "range.confirm": "確認",
   "range.startTime": "開始時間",

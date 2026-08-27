@@ -14,6 +14,7 @@
   "range.lastSevenDays": "Последние 7 дней",
   "range.lastThirtyDays": "Последние 30 дней",
   "range.currentMonth": "Текущий месяц",
+  "range.all": "Всё время",
   "range.resetToday": "Сбросить на сегодня",
   "range.confirm": "Подтвердить",
   "range.startTime": "Время начала",

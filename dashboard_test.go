@@ -689,9 +689,14 @@ func TestDashboardUsesTwoMonthLocalDateRangePicker(t *testing.T) {
 		`function dateRangeQuery()`,
 		`function resolvedDateRange()`,
 		`now.getTime()-5*60*60*1000`,
-		`today.getFullYear(),today.getMonth(),today.getDate()-7`,
-		`today.getFullYear(),today.getMonth(),today.getDate()-30`,
+		`data-range-preset="all"`,
+		`today.getFullYear(),today.getMonth(),today.getDate()-6`,
+		`today.getFullYear(),today.getMonth(),today.getDate()-29`,
 		`new Date(today.getFullYear(),today.getMonth(),1)`,
+		// Day-based presets must end at "now" so the current day is included.
+		`else if(mode==='last_7_days'){start=new Date(today.getFullYear(),today.getMonth(),today.getDate()-6);end=now;}`,
+		`else if(mode==='last_30_days'){start=new Date(today.getFullYear(),today.getMonth(),today.getDate()-29);end=now;}`,
+		`else if(mode==='all'){start=new Date(2000,0,1);end=now;}`,
 
 		`draftRangeMode='custom'`,
 		`new Date(calendarBaseMonth.getFullYear(),calendarBaseMonth.getMonth()+1,1)`,

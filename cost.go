@@ -405,6 +405,14 @@ func estimateRequestCostWithResolver(request RequestDetail, resolver modelPriceR
 	}
 	price, ok := resolver.resolve(model)
 	if !ok {
+		// Prices are frequently maintained against the client-facing alias rather
+		// than the upstream model name. Fall back to the alias before reporting
+		// the request as unpriced.
+		if alias := strings.TrimSpace(request.Alias); alias != "" {
+			price, ok = resolver.resolve(alias)
+		}
+	}
+	if !ok {
 		return EstimatedCost{}
 	}
 
