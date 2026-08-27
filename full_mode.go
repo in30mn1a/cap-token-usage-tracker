@@ -218,9 +218,8 @@ func (r *pluginRuntime) fullModeSessionResponse() (pluginapi.ManagementResponse,
 }
 
 func (r *pluginRuntime) fullModeDataResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
-	if !r.validFullModeSession(fullModeSessionFromRequest(request)) {
-		return jsonResponse(http.StatusUnauthorized, map[string]string{"error": "full-mode session is missing or expired"}), nil
-	}
+	// This payload carries API key labels and crypto metadata, never plaintext
+	// keys, so the enriched dashboard can load it without a session.
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.store == nil {

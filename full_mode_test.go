@@ -43,15 +43,18 @@ func TestFullModeSessionProtectsFullModeResources(t *testing.T) {
 		t.Fatal("full dashboard shell must not include protected data")
 	}
 
+	// Labels, crypto metadata and the price book are not sensitive, so the
+	// enriched dashboard reads them without a session. Mutating routes below
+	// must still refuse an unauthenticated caller.
 	dataRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.fullModeDataPath})
 	response, err = runtime.handleManagement(dataRequest)
-	if err != nil || response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("missing full-mode session response: %+v, %v", response, err)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("full-mode data without session: %+v, %v", response, err)
 	}
 	pricesRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.fullModePricesPath})
 	response, err = runtime.handleManagement(pricesRequest)
-	if err != nil || response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("missing full-mode session for prices response: %+v, %v", response, err)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("full-mode prices without session: %+v, %v", response, err)
 	}
 
 	sessionRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.fullModeSessionPath})
@@ -80,7 +83,9 @@ func TestFullModeSessionProtectsFullModeResources(t *testing.T) {
 	if err != nil || response.StatusCode != http.StatusOK {
 		t.Fatalf("full-mode session revoke response: %+v, %v", response, err)
 	}
-	response, err = runtime.handleManagement(validRequest)
+	// Reading stays open; a revoked session must no longer authorise mutations.
+	revokedReset, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.fullModeResetPath, Headers: http.Header{"X-Full-Mode-Session": []string{payload.Session}, "X-Confirm-Reset": []string{"reset"}}})
+	response, err = runtime.handleManagement(revokedReset)
 	if err != nil || response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("revoked full-mode session response: %+v, %v", response, err)
 	}
@@ -106,7 +111,8 @@ func TestFullModeSessionProtectsFullModeResources(t *testing.T) {
 	runtime.fullModeMu.Lock()
 	runtime.fullModeSessions[hash] = fullModeSession{expiresAt: time.Now().UTC().Add(-time.Second)}
 	runtime.fullModeMu.Unlock()
-	response, err = runtime.handleManagement(validRequest)
+	expiredReset, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.fullModeResetPath, Headers: http.Header{"X-Full-Mode-Session": []string{payload.Session}, "X-Confirm-Reset": []string{"reset"}}})
+	response, err = runtime.handleManagement(expiredReset)
 	if err != nil || response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expired full-mode session response: %+v, %v", response, err)
 	}

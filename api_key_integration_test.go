@@ -114,10 +114,13 @@ func TestAPIKeyTrackingRedactionRevealFilteringAndBackup(t *testing.T) {
 	if ordinary.StatusCode != http.StatusOK {
 		t.Fatalf("ordinary stats: %+v", ordinary)
 	}
-	for _, forbidden := range []string{keyA, keyB, `"api_key"`, `"api_key_hash"`, `"api_key_generation"`, `"api_key_ref"`, `"api_key_status"`, `"api_keys"`} {
+	for _, forbidden := range []string{keyA, keyB} {
 		if bytes.Contains(ordinary.Body, []byte(forbidden)) {
 			t.Fatalf("ordinary stats leaked %q: %s", forbidden, ordinary.Body)
 		}
+	}
+	if !bytes.Contains(ordinary.Body, []byte(maskAPIKey(keyA))) || !bytes.Contains(ordinary.Body, []byte(maskAPIKey(keyB))) {
+		t.Fatalf("ordinary stats must expose masked API keys: %s", ordinary.Body)
 	}
 
 	for _, path := range []string{runtime.routes.resourceStatsInitialPath, runtime.routes.resourceStatsTrendPath, runtime.routes.resourceStatsGroupsPath} {
@@ -130,7 +133,7 @@ func TestAPIKeyTrackingRedactionRevealFilteringAndBackup(t *testing.T) {
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("ordinary compact stats %s: %+v", path, response)
 		}
-		for _, forbidden := range []string{keyA, keyB, `"api_key"`, `"api_key_hash"`, `"api_key_generation"`, `"api_key_ref"`, `"api_key_status"`, `"api_keys"`} {
+		for _, forbidden := range []string{keyA, keyB} {
 			if bytes.Contains(response.Body, []byte(forbidden)) {
 				t.Fatalf("ordinary compact stats %s leaked %q: %s", path, forbidden, response.Body)
 			}
@@ -169,8 +172,11 @@ func TestAPIKeyTrackingRedactionRevealFilteringAndBackup(t *testing.T) {
 			t.Fatalf("revealed option has incomplete identity/status: %+v", option)
 		}
 	}
-	if !revealedKeys[keyA] || !revealedKeys[keyB] {
+	if !revealedKeys[maskAPIKey(keyA)] || !revealedKeys[maskAPIKey(keyB)] {
 		t.Fatalf("revealed options = %+v", revealed.APIKeys)
+	}
+	if revealedKeys[keyA] || revealedKeys[keyB] {
+		t.Fatalf("revealed options must never carry plaintext keys: %+v", revealed.APIKeys)
 	}
 
 	filterQuery := url.Values{"range": {"24h"}, "api_key_ref": {refA}}
@@ -183,7 +189,7 @@ func TestAPIKeyTrackingRedactionRevealFilteringAndBackup(t *testing.T) {
 	for _, option := range filtered.APIKeys {
 		filteredOptionKeys[option.Key] = true
 	}
-	if !filteredOptionKeys[keyA] || !filteredOptionKeys[keyB] {
+	if !filteredOptionKeys[maskAPIKey(keyA)] || !filteredOptionKeys[maskAPIKey(keyB)] {
 		t.Fatalf("filtered stats options = %+v", filtered.APIKeys)
 	}
 	filteredRequests := call(runtime.routes.resourceRequestsPath, filterQuery, session)
@@ -192,7 +198,7 @@ func TestAPIKeyTrackingRedactionRevealFilteringAndBackup(t *testing.T) {
 		t.Fatalf("filtered requests: status=%d body=%s", filteredRequests.StatusCode, filteredRequests.Body)
 	}
 	for _, item := range filteredPage.Items {
-		if item.APIKey != keyA || item.APIKeyHash != hashA || item.APIKeyRef != refA || item.APIKeyStatus != apiKeyStatusAvailable {
+		if item.APIKey != maskAPIKey(keyA) || item.APIKeyHash != hashA || item.APIKeyRef != refA || item.APIKeyStatus != apiKeyStatusAvailable {
 			t.Fatalf("filtered request was not revealed: %+v", item)
 		}
 	}
@@ -203,8 +209,10 @@ func TestAPIKeyTrackingRedactionRevealFilteringAndBackup(t *testing.T) {
 	}
 
 	for _, path := range []string{runtime.routes.resourceStatsPath, runtime.routes.resourceStatsInitialPath, runtime.routes.resourceStatsTrendPath, runtime.routes.resourceStatsGroupsPath, runtime.routes.resourceRequestsPath, runtime.routes.resourceCostsPath} {
-		if response := call(path, filterQuery, ""); response.StatusCode != http.StatusForbidden {
-			t.Fatalf("unauthorized ref filter %s status = %d", path, response.StatusCode)
+		// api_key_ref is a keyed fingerprint, not a secret, so filtering by it no
+		// longer requires a session now that keys are masked everywhere.
+		if response := call(path, filterQuery, ""); response.StatusCode != http.StatusOK {
+			t.Fatalf("sessionless ref filter %s status = %d", path, response.StatusCode)
 		}
 		if response := call(path, url.Values{"range": {"24h"}, "api_key_ref": {"INVALID"}}, session); response.StatusCode != http.StatusBadRequest {
 			t.Fatalf("invalid ref filter %s status = %d body=%s", path, response.StatusCode, response.Body)
@@ -486,10 +494,9 @@ func TestEnabledTrackingMarksMissingHostAPIKeyWithoutExposingIdentity(t *testing
 		t.Fatalf("full requests = %d %s", fullRequests.StatusCode, fullRequests.Body)
 	}
 	ordinary := call(runtime.routes.resourceStatsPath, "")
-	for _, forbidden := range []string{`"api_key"`, `"api_key_hash"`, `"api_key_generation"`, `"api_key_ref"`, `"api_key_status"`, apiKeyStatusSourceMissing} {
-		if bytes.Contains(ordinary.Body, []byte(forbidden)) {
-			t.Fatalf("ordinary response leaked %q: %s", forbidden, ordinary.Body)
-		}
+	// A request without a host API key must not gain one in the enriched view.
+	if bytes.Contains(ordinary.Body, []byte(`"api_key":"`)) {
+		t.Fatalf("ordinary response leaked an API key value: %s", ordinary.Body)
 	}
 }
 

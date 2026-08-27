@@ -206,6 +206,21 @@ func parseAPIKeyRef(ref string) (uint64, string, bool) {
 	return generation, hash, true
 }
 
+// maskAPIKey keeps the first and last two characters of a decrypted API key and
+// replaces the middle with a fixed-width run of asterisks, so neither the secret
+// nor its length leaves the process. The dashboard only needs enough to tell two
+// keys apart; api_key_ref remains available for exact identification.
+func maskAPIKey(plaintext string) string {
+	runes := []rune(plaintext)
+	if len(runes) == 0 {
+		return ""
+	}
+	if len(runes) <= 4 {
+		return strings.Repeat("*", len(runes))
+	}
+	return string(runes[:2]) + strings.Repeat("*", 8) + string(runes[len(runes)-2:])
+}
+
 func (r *pluginRuntime) sensitiveJSONResponse(status int, value Sensitive, fullMode bool, crypto cryptoContext, generations map[uint64]APIKeyCryptoGeneration) pluginapi.ManagementResponse {
 	if fullMode {
 		value.Reveal(func(ciphertext, fingerprint string, generation uint64) (string, string) {
@@ -223,7 +238,7 @@ func (r *pluginRuntime) sensitiveJSONResponse(status int, value Sensitive, fullM
 			if err != nil || plaintext == "" {
 				return "", apiKeyStatusCiphertextInvalid
 			}
-			return plaintext, apiKeyStatusAvailable
+			return maskAPIKey(plaintext), apiKeyStatusAvailable
 		})
 	} else {
 		value.Redact()

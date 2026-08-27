@@ -212,7 +212,9 @@ func (r *pluginRuntime) dispatchManagement(request pluginapi.ManagementRequest, 
 		if request.Method != "" && !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
 		}
-		return dashboardResponse(), nil
+		// The enriched dashboard is the default landing page. API keys are masked
+		// server-side, so only the management actions still need a session.
+		return fullDashboardResponse(), nil
 	case routes.fullDashboardPath:
 		if request.Method != "" && !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
@@ -239,9 +241,7 @@ func (r *pluginRuntime) dispatchManagement(request pluginapi.ManagementRequest, 
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
 		}
-		if !r.validFullModeSession(fullModeSessionFromRequest(request)) {
-			return jsonResponse(http.StatusUnauthorized, map[string]string{"error": "full-mode session is missing or expired"}), nil
-		}
+		// Reading the price book is not sensitive; saving it still needs a session.
 		return r.pricesResponse()
 	case routes.fullModePricesSavePath:
 		if !strings.EqualFold(request.Method, http.MethodGet) {
@@ -353,7 +353,9 @@ func (r *pluginRuntime) dispatchManagement(request pluginapi.ManagementRequest, 
 }
 
 func (r *pluginRuntime) statsResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
-	fullMode := r.validFullModeSession(fullModeSessionFromRequest(request))
+	// API keys are masked before leaving the process, so the enriched view is
+	// served without a management-key session.
+	fullMode := true
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.store == nil {
@@ -392,7 +394,9 @@ func (r *pluginRuntime) statsFilter(request pluginapi.ManagementRequest, fullMod
 }
 
 func (r *pluginRuntime) initialStatsResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
-	fullMode := r.validFullModeSession(fullModeSessionFromRequest(request))
+	// API keys are masked before leaving the process, so the enriched view is
+	// served without a management-key session.
+	fullMode := true
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	queryRange, filter, err := r.statsFilter(request, fullMode)
@@ -408,7 +412,9 @@ func (r *pluginRuntime) initialStatsResponse(request pluginapi.ManagementRequest
 }
 
 func (r *pluginRuntime) statsTrendResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
-	fullMode := r.validFullModeSession(fullModeSessionFromRequest(request))
+	// API keys are masked before leaving the process, so the enriched view is
+	// served without a management-key session.
+	fullMode := true
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	queryRange, filter, err := r.statsFilter(request, fullMode)
@@ -423,7 +429,9 @@ func (r *pluginRuntime) statsTrendResponse(request pluginapi.ManagementRequest) 
 }
 
 func (r *pluginRuntime) groupsStatsResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
-	fullMode := r.validFullModeSession(fullModeSessionFromRequest(request))
+	// API keys are masked before leaving the process, so the enriched view is
+	// served without a management-key session.
+	fullMode := true
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	queryRange, filter, err := r.statsFilter(request, fullMode)
@@ -558,7 +566,9 @@ func sortGroupStats(items []GroupStats, sortKey, direction string) error {
 }
 
 func (r *pluginRuntime) requestsResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
-	fullMode := r.validFullModeSession(fullModeSessionFromRequest(request))
+	// API keys are masked before leaving the process, so the enriched view is
+	// served without a management-key session.
+	fullMode := true
 	queryRange, err := usageRangeFromQuery(request.Query.Get("range"), request.Query.Get("start"), request.Query.Get("end"), time.Now().UTC())
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
@@ -589,7 +599,9 @@ func (r *pluginRuntime) requestsResponse(request pluginapi.ManagementRequest) (p
 }
 
 func (r *pluginRuntime) costsResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
-	fullMode := r.validFullModeSession(fullModeSessionFromRequest(request))
+	// API keys are masked before leaving the process, so the enriched view is
+	// served without a management-key session.
+	fullMode := true
 	queryRange, err := usageRangeFromQuery(request.Query.Get("range"), request.Query.Get("start"), request.Query.Get("end"), time.Now().UTC())
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
