@@ -1285,3 +1285,27 @@ func TestFullDashboardHasNoUnguardedFullModeButtonAccess(t *testing.T) {
 		t.Fatal("full dashboard dereferences the removed unlock button without a nil check")
 	}
 }
+
+// TestAggregateViewsLabelModelsByAlias pins the summary views to the alias the
+// client actually requested. Only the dimension table (which carries its own
+// alias column), the missing-price list (which must show the price book key) and
+// the CSV export keep the upstream name.
+func TestAggregateViewsLabelModelsByAlias(t *testing.T) {
+	for _, contract := range []string{
+		"function displayModel(model,alias)",
+		"rebuildAliasMap(modelRows());",
+		"groups.forEach(function(group){var name=displayModel(group.model,group.alias);",
+		"return modelRows().filter(function(group){var name=displayModel(group.model,group.alias);",
+		"((currentCosts&&currentCosts.models)||[]).forEach(function(item){var name=displayModel(item.model,item.alias);",
+		"((currentCosts&&currentCosts.series)||[]).forEach(function(point){var name=displayModel(point.model,point.alias);",
+		"raw.forEach(function(point){var name=displayModel(point.model,point.alias);",
+	} {
+		if !strings.Contains(dashboardHTML, contract) {
+			t.Fatalf("dashboard no longer labels aggregates by alias: %q", contract)
+		}
+	}
+	// The price book is keyed by the upstream name, so that list must not switch.
+	if !strings.Contains(dashboardHTML, "missing") || !strings.Contains(dashboardHTML, "modelName(item.model)") {
+		t.Fatal("the missing-price list must keep the upstream model name")
+	}
+}
