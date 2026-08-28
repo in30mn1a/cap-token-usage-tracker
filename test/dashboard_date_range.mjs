@@ -4,9 +4,9 @@ import { chromium } from 'playwright-core';
 
 const [htmlPath, chromePath, scenario = 'exclusive'] = process.argv.slice(2);
 if (!htmlPath || !chromePath) {
-  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend]');
+  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend|all-range-cold]');
 }
-if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend'].includes(scenario)) {
+if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend', 'all-range-cold'].includes(scenario)) {
   throw new Error(`unknown dashboard date-range browser scenario: ${scenario}`);
 }
 
@@ -26,6 +26,7 @@ const emptyInitial = {
 // The "All" preset has to resolve to the retained window rather than a fixed
 // far-past date, so this scenario serves a store that started three hours ago
 // and holds a single bucket of traffic.
+const populatedScenario = scenario === 'all-range-trend' || scenario === 'all-range-cold';
 const retainedSince = '2026-08-23T09:00:00.000Z';
 const trendPointHour = '2026-08-23T11:00:00.000Z';
 const trendCounters = { requests: 3, input_tokens: 200, output_tokens: 100, reasoning_tokens: 0, cached_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 300, failed_requests: 0 };
@@ -68,19 +69,21 @@ const server = createServer((request, response) => {
     return;
   }
   if (url.pathname === `${resourceBase}/preferences`) {
-    sendJSON({
-      time_range_mode: 'custom',
-      time_range_start: initialRange.start,
-      time_range_end: initialRange.end,
-    });
+    sendJSON(scenario === 'all-range-cold'
+      ? { time_range_mode: 'all', granularity: 'hour' }
+      : {
+        time_range_mode: 'custom',
+        time_range_start: initialRange.start,
+        time_range_end: initialRange.end,
+      });
     return;
   }
   if (url.pathname === `${resourceBase}/stats/initial`) {
-    sendJSON(scenario === 'all-range-trend' ? populatedInitial : emptyInitial);
+    sendJSON(populatedScenario ? populatedInitial : emptyInitial);
     return;
   }
   if (url.pathname === `${resourceBase}/stats/trends`) {
-    sendJSON(scenario === 'all-range-trend' ? populatedTrend : { model_series: [], bucket_seconds: 86400 });
+    sendJSON(populatedScenario ? populatedTrend : { model_series: [], bucket_seconds: 86400 });
     return;
   }
   if (url.pathname === `${resourceBase}/stats/groups` || url.pathname === `${resourceBase}/requests`) {
@@ -117,6 +120,31 @@ try {
   await page.goto(dashboardURL, { waitUntil: 'domcontentloaded' });
   await page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
 
+  if (scenario === 'all-range-cold') {
+    // Restoring the saved "All" preset issues its first query before any
+    // response has revealed retained_since, so the status has to be corrected
+    // once it is known instead of quoting the placeholder start forever.
+    await page.waitForTimeout(600);
+    const status = await page.locator('#status').textContent();
+    if (status.includes('2000')) {
+      throw new Error(`a restored "All" preset must report the retained window, got ${status}`);
+    }
+    if (!status.includes('2026/08/23')) {
+      throw new Error(`a restored "All" preset must name the retained window start, got ${status}`);
+    }
+    const bars = await page.locator('#chart rect.bar-input').count();
+    if (bars < 1) {
+      throw new Error(`a restored "All" preset must draw the token trend, got ${bars} bars`);
+    }
+    if (pageErrors.length) {
+      throw new Error(`dashboard raised ${pageErrors.length} page error(s): ${pageErrors[0].message}`);
+    }
+    await context.close();
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+    process.exit(0);
+  }
+
   await page.locator('#rangeButton').click();
   if (scenario === 'all-range-trend') {
     const appliedResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
@@ -140,6 +168,15 @@ try {
       if (bars < 1) {
         throw new Error(`"All" range must still draw the token trend at ${granularity} granularity, got ${bars} bars`);
       }
+    }
+
+    // The status must quote the range that was actually queried.
+    const status = await page.locator('#status').textContent();
+    if (status.includes('2000')) {
+      throw new Error(`"All" status must report the retained window, got ${status}`);
+    }
+    if (!status.includes('2026/08/23')) {
+      throw new Error(`"All" status must name the retained window start, got ${status}`);
     }
 
     if (pageErrors.length) {

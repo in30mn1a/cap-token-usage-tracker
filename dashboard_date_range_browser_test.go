@@ -103,3 +103,7 @@ func TestDashboardDateRangeCalendarAmericaLosAngelesDSTInBrowser(t *testing.T) {
 func TestDashboardAllRangeKeepsFineGrainedTrendInBrowser(t *testing.T) {
 	runDashboardDateRangeBrowserTest(t, "all-range-trend", "dashboard all-range trend browser regression failed")
 }
+
+func TestDashboardRestoredAllRangeReportsRetainedWindowInBrowser(t *testing.T) {
+	runDashboardDateRangeBrowserTest(t, "all-range-cold", "dashboard restored all-range browser regression failed")
+}
