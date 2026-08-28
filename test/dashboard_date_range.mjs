@@ -4,9 +4,9 @@ import { chromium } from 'playwright-core';
 
 const [htmlPath, chromePath, scenario = 'exclusive'] = process.argv.slice(2);
 if (!htmlPath || !chromePath) {
-  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst]');
+  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend]');
 }
-if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst'].includes(scenario)) {
+if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend'].includes(scenario)) {
   throw new Error(`unknown dashboard date-range browser scenario: ${scenario}`);
 }
 
@@ -22,6 +22,28 @@ const emptyInitial = {
   models: [],
   sources: [],
   bucket_seconds: 86400,
+};
+// The "All" preset has to resolve to the retained window rather than a fixed
+// far-past date, so this scenario serves a store that started three hours ago
+// and holds a single bucket of traffic.
+const retainedSince = '2026-08-23T09:00:00.000Z';
+const trendPointHour = '2026-08-23T11:00:00.000Z';
+const trendCounters = { requests: 3, input_tokens: 200, output_tokens: 100, reasoning_tokens: 0, cached_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 300, failed_requests: 0 };
+const populatedInitial = {
+  schema_version: 2,
+  generated_at: '2026-08-23T12:00:00.000Z',
+  retained_since: retainedSince,
+  last_used: trendPointHour,
+  bucket_seconds: 300,
+  summary: trendCounters,
+  models: [Object.assign({ model: 'upstream-model', alias: 'client-alias' }, trendCounters)],
+  series: [Object.assign({ hour: trendPointHour }, trendCounters)],
+  sources: ['cli'],
+};
+const populatedTrend = {
+  schema_version: 2,
+  bucket_seconds: 300,
+  model_series: [Object.assign({ hour: trendPointHour, model: 'upstream-model', alias: 'client-alias' }, trendCounters)],
 };
 
 async function setTimePickerValue(page, boundary, values) {
@@ -54,11 +76,11 @@ const server = createServer((request, response) => {
     return;
   }
   if (url.pathname === `${resourceBase}/stats/initial`) {
-    sendJSON(emptyInitial);
+    sendJSON(scenario === 'all-range-trend' ? populatedInitial : emptyInitial);
     return;
   }
   if (url.pathname === `${resourceBase}/stats/trends`) {
-    sendJSON({ model_series: [], bucket_seconds: 86400 });
+    sendJSON(scenario === 'all-range-trend' ? populatedTrend : { model_series: [], bucket_seconds: 86400 });
     return;
   }
   if (url.pathname === `${resourceBase}/stats/groups` || url.pathname === `${resourceBase}/requests`) {
@@ -96,16 +118,52 @@ try {
   await page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
 
   await page.locator('#rangeButton').click();
+  if (scenario === 'all-range-trend') {
+    const appliedResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
+    await page.locator('[data-range-preset="all"]').click();
+    await page.locator('#confirmDateRange').click();
+    const applied = new URL((await appliedResponse).url());
+    if (applied.searchParams.get('start') !== retainedSince) {
+      throw new Error(`"All" must query from the retained window start ${retainedSince}, got ${applied.searchParams.get('start')}`);
+    }
+
+    // continuousBuckets fills every slot between the range bounds and gives up
+    // after 100000 steps, so a far-past start leaves the minute and hour trends
+    // without a single drawn bar even though the payload carries data.
+    for (const granularity of ['hour', 'minute']) {
+      await page.locator('#granularity').evaluate((select, value) => {
+        select.value = value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      }, granularity);
+      await page.waitForTimeout(300);
+      const bars = await page.locator('#chart rect.bar-input').count();
+      if (bars < 1) {
+        throw new Error(`"All" range must still draw the token trend at ${granularity} granularity, got ${bars} bars`);
+      }
+    }
+
+    if (pageErrors.length) {
+      throw new Error(`dashboard raised ${pageErrors.length} page error(s): ${pageErrors[0].message}`);
+    }
+    await context.close();
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+    process.exit(0);
+  }
   if (scenario === 'quick-preset') {
     await page.locator('[data-range-preset="last_30_days"]').click();
 
+    // "Last 30 days" counts today as one of the thirty and runs to the current
+    // instant; anchoring the end at midnight dropped today's traffic entirely.
+    const expectedBoundaryTimes = { start: '00:00:00', end: '12:00:00' };
     for (const boundary of ['start', 'end']) {
       const button = page.locator(`#${boundary}TimeButton`);
       if (await button.isDisabled()) {
         throw new Error(`${boundary} time must remain editable after choosing a quick range`);
       }
-      if (await button.textContent() !== '00:00:00') {
-        throw new Error(`last 30 days ${boundary} must start at local midnight, got ${await button.textContent()}`);
+      const shown = await button.textContent();
+      if (shown !== expectedBoundaryTimes[boundary]) {
+        throw new Error(`last 30 days ${boundary} must show ${expectedBoundaryTimes[boundary]}, got ${shown}`);
       }
     }
 
@@ -114,12 +172,14 @@ try {
     const confirmedResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === `${resourceBase}/stats/initial`
-        && url.searchParams.get('start') === '2026-07-24T01:02:03.000Z';
+        && url.searchParams.get('start') === '2026-07-25T01:02:03.000Z';
     });
     await page.locator('#confirmDateRange').click();
     const confirmed = new URL((await confirmedResponse).url());
-    if (confirmed.searchParams.get('end') !== '2026-08-24T00:00:00.000Z') {
-      throw new Error(`expected manually edited quick range end=2026-08-24T00:00:00.000Z, got ${confirmed.searchParams.get('end')}`);
+    // The end tracks the current instant, so only the second is deterministic.
+    const confirmedEnd = confirmed.searchParams.get('end');
+    if (!String(confirmedEnd).startsWith('2026-08-23T12:00:00')) {
+      throw new Error(`expected manually edited quick range end at 2026-08-23T12:00:00, got ${confirmedEnd}`);
     }
   } else if (scenario === 'reverse') {
     await page.locator('[data-date="2026-08-23"]').click();

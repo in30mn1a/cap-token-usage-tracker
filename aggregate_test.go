@@ -351,3 +351,32 @@ func TestStatsFilterByAliasKeepsAliasedRows(t *testing.T) {
 		t.Fatalf("alias filter produced %+v", initial.Models)
 	}
 }
+
+// A cold load with the "All" preset saved asks for a range starting long before
+// the store existed. Sizing buckets off that span collapses a few hours of
+// traffic into one weekly point, which the minute and hour trends cannot draw.
+func TestCompactBucketSecondsIgnoresRangeStartBeforeRetention(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	since := now.Add(-3 * time.Hour)
+	farPast := usageRange{Name: "custom", Start: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)}
+	if got := compactBucketSeconds(farPast, since, now); got != 300 {
+		t.Fatalf("bucket seconds for an all-range query = %d, want 300", got)
+	}
+	if got := compactBucketSeconds(usageRange{Name: "custom"}, since, now); got != 300 {
+		t.Fatalf("bucket seconds for an open-ended query = %d, want 300", got)
+	}
+
+	// A start inside the retained window still sizes off the requested span.
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if got := compactBucketSeconds(usageRange{Name: "custom", Start: now.Add(-40 * 24 * time.Hour)}, old, now); got != 21600 {
+		t.Fatalf("bucket seconds for a 40-day query = %d, want 21600", got)
+	}
+	for _, named := range []struct {
+		name string
+		want uint64
+	}{{"24h", 300}, {"7d", 3600}, {"30d", 21600}} {
+		if got := compactBucketSeconds(usageRange{Name: named.name, Start: farPast.Start}, since, now); got != named.want {
+			t.Fatalf("bucket seconds for %s = %d, want %d", named.name, got, named.want)
+		}
+	}
+}

@@ -99,3 +99,7 @@ func TestDashboardDateRangeQuickPresetUsesMidnightsAndAllowsManualTimeInBrowser(
 func TestDashboardDateRangeCalendarAmericaLosAngelesDSTInBrowser(t *testing.T) {
 	runDashboardDateRangeBrowserTest(t, "los-angeles-dst", "dashboard calendar America/Los_Angeles DST browser regression failed")
 }
+
+func TestDashboardAllRangeKeepsFineGrainedTrendInBrowser(t *testing.T) {
+	runDashboardDateRangeBrowserTest(t, "all-range-trend", "dashboard all-range trend browser regression failed")
+}

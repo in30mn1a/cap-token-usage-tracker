@@ -696,7 +696,11 @@ func TestDashboardUsesTwoMonthLocalDateRangePicker(t *testing.T) {
 		// Day-based presets must end at "now" so the current day is included.
 		`else if(mode==='last_7_days'){start=new Date(today.getFullYear(),today.getMonth(),today.getDate()-6);end=now;}`,
 		`else if(mode==='last_30_days'){start=new Date(today.getFullYear(),today.getMonth(),today.getDate()-29);end=now;}`,
-		`else if(mode==='all'){start=new Date(2000,0,1);end=now;}`,
+		`else if(mode==='all'){start=allRangeStart(now);end=now;}`,
+		// "All" resolves to the retained window; a fixed far-past start makes
+		// continuousBuckets give up before it reaches any real point.
+		`function allRangeStart(now){if(retainedSince&&retainedSince.getTime()<now.getTime())return new Date(retainedSince.getTime());`,
+		`retainedSince=parseRetainedSince(data.retained_since)`,
 
 		`draftRangeMode='custom'`,
 		`new Date(calendarBaseMonth.getFullYear(),calendarBaseMonth.getMonth()+1,1)`,

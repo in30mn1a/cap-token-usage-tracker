@@ -481,7 +481,11 @@ func compactBucketSeconds(queryRange usageRange, since, now time.Time) uint64 {
 		return uint64((6 * time.Hour) / time.Second)
 	}
 	start := queryRange.Start
-	if start.IsZero() {
+	if start.IsZero() || start.Before(since) {
+		// The "All" preset asks for a range that reaches back long before any
+		// data exists. Sizing the buckets off that span degrades every point to
+		// a weekly bucket, which leaves the minute and hour trends with nothing
+		// to draw. Only the retained window can actually hold data.
 		start = since
 	}
 	if start.IsZero() || !start.Before(now) {
