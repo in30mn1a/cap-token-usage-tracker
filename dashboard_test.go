@@ -1304,6 +1304,11 @@ func TestAggregateViewsLabelModelsByAlias(t *testing.T) {
 			t.Fatalf("dashboard no longer labels aggregates by alias: %q", contract)
 		}
 	}
+	// modelName() returns a placeholder for blanks, so emptiness must be tested on
+	// the raw value; testing modelName(alias) labelled every model "untitled".
+	if !strings.Contains(dashboardHTML, "function displayModel(model,alias){var direct=rawModelValue(alias);") {
+		t.Fatal("displayModel must test the raw alias, not modelName(alias)")
+	}
 	// The price book is keyed by the upstream name, so that list must not switch.
 	if !strings.Contains(dashboardHTML, "missing") || !strings.Contains(dashboardHTML, "modelName(item.model)") {
 		t.Fatal("the missing-price list must keep the upstream model name")
