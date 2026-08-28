@@ -11,6 +11,12 @@ const (
 	defaultTimeRangeMode     = "custom"
 )
 
+// dashboardGranularities mirrors the <option> values of the dashboard's
+// granularity select; the parity test keeps the two in step.
+var dashboardGranularities = map[string]struct{}{
+	"minute": {}, "hour": {}, "day": {}, "week": {}, "month": {},
+}
+
 var dashboardTimeRangeModes = map[string]struct{}{
 	"custom": {}, "last_5_hours": {}, "last_7_days": {}, "last_30_days": {}, "current_month": {}, "all": {},
 }
@@ -23,6 +29,9 @@ type DashboardPreferences struct {
 	TimeRangeMode          string   `json:"time_range_mode"`
 	TimeRangeStart         string   `json:"time_range_start,omitempty"`
 	TimeRangeEnd           string   `json:"time_range_end,omitempty"`
+	// Granularity is empty until the reader picks one, which keeps the trend
+	// tracking the selected range instead of pinning a stale choice.
+	Granularity string `json:"granularity,omitempty"`
 }
 
 var requestColumnKeys = []string{
@@ -70,6 +79,11 @@ func normalizeDashboardPreferences(input DashboardPreferences) (DashboardPrefere
 	if _, ok := dashboardTimeRangeModes[mode]; !ok {
 		return DashboardPreferences{}, fmt.Errorf("time_range_mode is unsupported")
 	}
+	if granularity := input.Granularity; granularity != "" {
+		if _, ok := dashboardGranularities[granularity]; !ok {
+			return DashboardPreferences{}, fmt.Errorf("granularity is unsupported")
+		}
+	}
 	start, end := "", ""
 	if mode == "custom" && (input.TimeRangeStart != "" || input.TimeRangeEnd != "") {
 		if input.TimeRangeStart == "" || input.TimeRangeEnd == "" {
@@ -92,6 +106,7 @@ func normalizeDashboardPreferences(input DashboardPreferences) (DashboardPrefere
 		TimeRangeMode:          mode,
 		TimeRangeStart:         start,
 		TimeRangeEnd:           end,
+		Granularity:            input.Granularity,
 	}, nil
 }
 

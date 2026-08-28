@@ -107,3 +107,7 @@ func TestDashboardAllRangeKeepsFineGrainedTrendInBrowser(t *testing.T) {
 func TestDashboardRestoredAllRangeReportsRetainedWindowInBrowser(t *testing.T) {
 	runDashboardDateRangeBrowserTest(t, "all-range-cold", "dashboard restored all-range browser regression failed")
 }
+
+func TestDashboardGranularityChoiceSurvivesReloadInBrowser(t *testing.T) {
+	runDashboardDateRangeBrowserTest(t, "granularity-persists", "dashboard granularity persistence browser regression failed")
+}

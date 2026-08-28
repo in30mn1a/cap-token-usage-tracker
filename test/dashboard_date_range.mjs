@@ -4,9 +4,9 @@ import { chromium } from 'playwright-core';
 
 const [htmlPath, chromePath, scenario = 'exclusive'] = process.argv.slice(2);
 if (!htmlPath || !chromePath) {
-  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend|all-range-cold]');
+  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend|all-range-cold|granularity-persists]');
 }
-if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend', 'all-range-cold'].includes(scenario)) {
+if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend', 'all-range-cold', 'granularity-persists'].includes(scenario)) {
   throw new Error(`unknown dashboard date-range browser scenario: ${scenario}`);
 }
 
@@ -26,7 +26,10 @@ const emptyInitial = {
 // The "All" preset has to resolve to the retained window rather than a fixed
 // far-past date, so this scenario serves a store that started three hours ago
 // and holds a single bucket of traffic.
-const populatedScenario = scenario === 'all-range-trend' || scenario === 'all-range-cold';
+const populatedScenario = scenario === 'all-range-trend' || scenario === 'all-range-cold' || scenario === 'granularity-persists';
+// Saved preferences live in the stub for the lifetime of the scenario so a
+// reload can prove the granularity survived the round trip.
+let savedGranularity = '';
 const retainedSince = '2026-08-23T09:00:00.000Z';
 const trendPointHour = '2026-08-23T11:00:00.000Z';
 const trendCounters = { requests: 3, input_tokens: 200, output_tokens: 100, reasoning_tokens: 0, cached_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 300, failed_requests: 0 };
@@ -69,6 +72,13 @@ const server = createServer((request, response) => {
     return;
   }
   if (url.pathname === `${resourceBase}/preferences`) {
+    if (scenario === 'granularity-persists') {
+      if (url.searchParams.get('save') === '1') {
+        savedGranularity = url.searchParams.get('granularity') || '';
+      }
+      sendJSON({ time_range_mode: 'all', granularity: savedGranularity });
+      return;
+    }
     sendJSON(scenario === 'all-range-cold'
       ? { time_range_mode: 'all', granularity: 'hour' }
       : {
@@ -119,6 +129,40 @@ try {
   await page.clock.install({ time: new Date('2026-08-23T12:00:00.000Z') });
   await page.goto(dashboardURL, { waitUntil: 'domcontentloaded' });
   await page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
+
+  if (scenario === 'granularity-persists') {
+    await page.waitForTimeout(600);
+    // The retained window is three hours, so an unpinned granularity has to
+    // resolve to "minute" -- the far-past placeholder would yield "month".
+    const derived = await page.locator('#granularity').inputValue();
+    if (derived !== 'minute') {
+      throw new Error(`an unpinned granularity must follow the resolved range, got ${derived}`);
+    }
+
+    await page.locator('#granularity').evaluate((select) => {
+      select.value = 'day';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.waitForTimeout(600);
+    if (savedGranularity !== 'day') {
+      throw new Error(`choosing a granularity must persist it, stub saved ${JSON.stringify(savedGranularity)}`);
+    }
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(900);
+    const restored = await page.locator('#granularity').inputValue();
+    if (restored !== 'day') {
+      throw new Error(`a saved granularity must survive a reload, got ${restored}`);
+    }
+
+    if (pageErrors.length) {
+      throw new Error(`dashboard raised ${pageErrors.length} page error(s): ${pageErrors[0].message}`);
+    }
+    await context.close();
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+    process.exit(0);
+  }
 
   if (scenario === 'all-range-cold') {
     // Restoring the saved "All" preset issues its first query before any

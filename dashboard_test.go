@@ -338,7 +338,7 @@ func TestDashboardRefreshPreservesTrendZoom(t *testing.T) {
 	for _, required := range []string{
 		"function confirmDateRange(){",
 		"updateGranularityForRange();resetTrendZooms();",
-		"document.getElementById('granularity').addEventListener('change',function(){resetTrendZooms();renderVisuals();})",
+		"document.getElementById('granularity').addEventListener('change',function(){granularityPinned=true;scheduleDashboardPreferencesSave();resetTrendZooms();renderVisuals();})",
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard must still reset both trend zooms when their data scope changes: %q", required)

@@ -61,3 +61,50 @@ func TestDashboardTimeRangeModesMatchDashboardScript(t *testing.T) {
 		}
 	}
 }
+
+// The granularity select is the only place the option values are declared, so a
+// new one there has to be accepted by the server or saving it 400s and the
+// reader silently loses the choice on the next load.
+func TestDashboardGranularitiesMatchDashboardSelect(t *testing.T) {
+	const marker = `<select id="granularity"`
+	start := strings.Index(dashboardHTML, marker)
+	if start < 0 {
+		t.Fatal("dashboard no longer declares a granularity select")
+	}
+	end := strings.Index(dashboardHTML[start:], "</select>")
+	if end < 0 {
+		t.Fatal("granularity select is not terminated")
+	}
+	markup := dashboardHTML[start : start+end]
+	options := map[string]struct{}{}
+	for _, fragment := range strings.Split(markup, `<option value="`)[1:] {
+		value, _, ok := strings.Cut(fragment, `"`)
+		if !ok {
+			continue
+		}
+		options[value] = struct{}{}
+	}
+	if len(options) == 0 {
+		t.Fatal("could not parse the granularity select options")
+	}
+	for value := range options {
+		if _, ok := dashboardGranularities[value]; !ok {
+			t.Fatalf("dashboard offers granularity %q that the server rejects", value)
+		}
+		if _, err := normalizeDashboardPreferences(DashboardPreferences{RequestPageSize: 100, DimensionPageSize: 100, Granularity: value}); err != nil {
+			t.Fatalf("granularity %q is rejected: %v", value, err)
+		}
+	}
+	for value := range dashboardGranularities {
+		if _, ok := options[value]; !ok {
+			t.Fatalf("server accepts granularity %q that the dashboard cannot offer", value)
+		}
+	}
+	if _, err := normalizeDashboardPreferences(DashboardPreferences{RequestPageSize: 100, DimensionPageSize: 100, Granularity: "fortnight"}); err == nil {
+		t.Fatal("an unsupported granularity must be rejected")
+	}
+	// An unset granularity means "follow the range", not an error.
+	if _, err := normalizeDashboardPreferences(DashboardPreferences{RequestPageSize: 100, DimensionPageSize: 100}); err != nil {
+		t.Fatalf("an unset granularity must be accepted: %v", err)
+	}
+}
