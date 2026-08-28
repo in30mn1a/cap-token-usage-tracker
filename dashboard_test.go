@@ -1272,3 +1272,16 @@ func TestDashboardLocalesCatalog(t *testing.T) {
 		t.Fatalf("dashboardHTML missing init sequence %q", initSeq)
 	}
 }
+
+// TestFullDashboardHasNoUnguardedFullModeButtonAccess guards against the crash
+// that shipped in v2.2.0: removing the unlock button left
+// getElementById('fullModeButton').addEventListener(...) in the bootstrap, which
+// threw before startDashboard() ran and left the page stuck on "loading".
+func TestFullDashboardHasNoUnguardedFullModeButtonAccess(t *testing.T) {
+	if strings.Contains(fullDashboardHTML, `id="fullModeButton"`) {
+		t.Fatal("full dashboard still renders the unlock button")
+	}
+	if strings.Contains(fullDashboardHTML, "getElementById('fullModeButton').") {
+		t.Fatal("full dashboard dereferences the removed unlock button without a nil check")
+	}
+}
