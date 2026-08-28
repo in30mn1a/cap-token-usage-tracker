@@ -71,11 +71,22 @@ func newUsageFilterFromIdentities(source string, identities []string) usageFilte
 	return filter
 }
 
+// matchesModelFilter accepts either the upstream model name or the alias
+// clients used to reach it. The dashboard labels and groups its model views by
+// alias, so the value it sends back as a model filter is the alias; matching
+// only the upstream name makes every such selection return nothing.
+func matchesModelFilter(model, alias, want string) bool {
+	if want == "" {
+		return true
+	}
+	return compactModelName(model) == want || strings.TrimSpace(alias) == want
+}
+
 func (f usageFilter) matches(dimensions Dimensions) bool {
 	if f.Source != "" && dimensions.Source != f.Source {
 		return false
 	}
-	if f.Model != "" && compactModelName(dimensions.Model) != f.Model {
+	if !matchesModelFilter(dimensions.Model, dimensions.Alias, f.Model) {
 		return false
 	}
 	if f.APIKeyRefSet != "" {

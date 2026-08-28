@@ -2485,11 +2485,7 @@ func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, mod
 				return fmt.Errorf("decode request detail: %w", err)
 			}
 			item.Dimensions = sanitizeDimensionsSource(item.Dimensions)
-			itemModel := item.Model
-			if itemModel == "" {
-				itemModel = "未标记模型"
-			}
-			if model != "" && itemModel != model {
+			if !matchesModelFilter(item.Model, item.Alias, model) {
 				continue
 			}
 			if !filter.matches(item.Dimensions) {

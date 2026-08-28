@@ -319,3 +319,35 @@ func TestInitialStatsDropsAmbiguousModelAlias(t *testing.T) {
 		t.Fatalf("ambiguous rollup lost counters: %+v", initial.Models[0])
 	}
 }
+
+// The dashboard's model dropdown, donut drill-down and hidden-model toggles all
+// carry the label they display, which is the alias. A filter that only matches
+// the upstream name silently returns an empty result for every aliased model.
+func TestModelFilterAcceptsAliasAndUpstreamName(t *testing.T) {
+	dimensions := Dimensions{Model: "moonshotai/kimi-k3", Alias: "nv/kimi-k3"}
+	for _, want := range []string{"", "moonshotai/kimi-k3", "nv/kimi-k3"} {
+		if !(usageFilter{Model: want}).matches(dimensions) {
+			t.Fatalf("model filter %q did not match %+v", want, dimensions)
+		}
+	}
+	if (usageFilter{Model: "nv/deepseek-v4-pro"}).matches(dimensions) {
+		t.Fatal("model filter matched an unrelated alias")
+	}
+	if !(usageFilter{Model: "未标记模型"}).matches(Dimensions{}) {
+		t.Fatal("unlabelled model filter stopped matching blank models")
+	}
+}
+
+func TestStatsFilterByAliasKeepsAliasedRows(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	hour := now.Add(-time.Hour).Truncate(time.Hour).Unix()
+	data := map[aggregateKey]Counters{
+		{Hour: hour, Dimensions: Dimensions{Model: "moonshotai/kimi-k3", Alias: "nv/kimi-k3"}}: {Requests: 1, TotalTokens: 131229},
+		{Hour: hour, Dimensions: Dimensions{Model: "gpt-5.6-sol", Alias: "gpt-5.6-sol"}}:       {Requests: 2, TotalTokens: 500000},
+	}
+	queryRange := usageRange{Name: "24h", Start: now.Add(-24 * time.Hour)}
+	initial := buildInitialStatsForRange(data, now.Add(-30*24*time.Hour), now, queryRange, usageFilter{Model: "nv/kimi-k3"}, now, nil)
+	if len(initial.Models) != 1 || initial.Models[0].Model != "moonshotai/kimi-k3" || initial.Summary.Requests != 1 {
+		t.Fatalf("alias filter produced %+v", initial.Models)
+	}
+}

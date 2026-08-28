@@ -452,7 +452,11 @@ func (r *pluginRuntime) groupsStatsResponse(request pluginapi.ManagementRequest)
 	if len(excludedModels) > 0 {
 		items := stats.Items[:0]
 		for _, item := range stats.Items {
-			if _, excluded := excludedModels[compactModelName(item.Model)]; !excluded {
+			_, excluded := excludedModels[compactModelName(item.Model)]
+			if !excluded && item.Alias != "" {
+				_, excluded = excludedModels[item.Alias]
+			}
+			if !excluded {
 				items = append(items, item)
 			}
 		}
