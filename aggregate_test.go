@@ -251,3 +251,71 @@ func TestUsageFilterANDsModelWithAPIKeyRefUnion(t *testing.T) {
 		t.Fatalf("model-and-union stats = %+v", stats)
 	}
 }
+
+// The dashboard's modelRows() prefers InitialStatsResponse.Models over the
+// dimension rows, so every aggregate view (top model, share, trend, cost) is
+// labelled from this payload. Dropping Alias here silently reverts those views
+// to upstream names no matter what the client does.
+func TestInitialStatsModelsCarryAlias(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	hour := now.Add(-time.Hour).Truncate(time.Hour).Unix()
+	aliased := Dimensions{Provider: "nvidia", Model: "moonshotai/kimi-k3", Alias: "nv/kimi-k3"}
+	bare := Dimensions{Provider: "codex", Model: "gpt-5.6-sol"}
+	data := map[aggregateKey]Counters{
+		{Hour: hour, Dimensions: aliased}: {Requests: 1, TotalTokens: 131229},
+		{Hour: hour, Dimensions: bare}:    {Requests: 2, TotalTokens: 500000},
+	}
+	queryRange := usageRange{Name: "24h", Start: now.Add(-24 * time.Hour)}
+
+	initial := buildInitialStatsForRange(data, now.Add(-30*24*time.Hour), now, queryRange, usageFilter{}, now, nil)
+	byModel := make(map[string]ModelStats, len(initial.Models))
+	for _, row := range initial.Models {
+		byModel[row.Model] = row
+	}
+	if got := byModel["moonshotai/kimi-k3"].Alias; got != "nv/kimi-k3" {
+		t.Fatalf("range rollup alias = %q, want nv/kimi-k3: %+v", got, initial.Models)
+	}
+	if got := byModel["gpt-5.6-sol"].Alias; got != "" {
+		t.Fatalf("unaliased model gained alias %q", got)
+	}
+
+	// The persisted path rebuilds the compact rollup from the dimension rows.
+	stats, err := buildStats(data, now.Add(-30*24*time.Hour), now, "24h", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact := initialStatsFromFull(stats, queryRange)
+	for _, row := range compact.Models {
+		if row.Model == "moonshotai/kimi-k3" && row.Alias != "nv/kimi-k3" {
+			t.Fatalf("compact rollup alias = %q, want nv/kimi-k3", row.Alias)
+		}
+	}
+
+	body, err := json.Marshal(compact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"alias":"nv/kimi-k3"`) {
+		t.Fatalf("serialized initial stats dropped the alias: %s", body)
+	}
+}
+
+func TestInitialStatsDropsAmbiguousModelAlias(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	hour := now.Add(-time.Hour).Truncate(time.Hour).Unix()
+	data := map[aggregateKey]Counters{
+		{Hour: hour, Dimensions: Dimensions{Model: "shared", Alias: "first"}}:  {Requests: 1, TotalTokens: 10},
+		{Hour: hour, Dimensions: Dimensions{Model: "shared", Alias: "second"}}: {Requests: 1, TotalTokens: 20},
+		{Hour: hour, Dimensions: Dimensions{Model: "shared"}}:                  {Requests: 1, TotalTokens: 30},
+	}
+	initial := buildInitialStatsForRange(data, now.Add(-30*24*time.Hour), now, usageRange{Name: "24h", Start: now.Add(-24 * time.Hour)}, usageFilter{}, now, nil)
+	if len(initial.Models) != 1 {
+		t.Fatalf("models = %+v", initial.Models)
+	}
+	if initial.Models[0].Alias != "" {
+		t.Fatalf("ambiguous alias = %q, want empty so the view falls back to the upstream name", initial.Models[0].Alias)
+	}
+	if initial.Models[0].Requests != 3 || initial.Models[0].TotalTokens != 60 {
+		t.Fatalf("ambiguous rollup lost counters: %+v", initial.Models[0])
+	}
+}

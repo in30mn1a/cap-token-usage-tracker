@@ -194,6 +194,10 @@ type GroupStats struct {
 // response. It intentionally omits the unused dimension fields in GroupStats.
 type ModelStats struct {
 	Model string `json:"model"`
+	// Alias is the client-facing name requests used to reach Model. The
+	// dashboard labels its aggregate views by alias, so the compact rollup has
+	// to carry it even though it drops the other dimension fields.
+	Alias string `json:"alias,omitempty"`
 	Counters
 	AverageLatencyNS uint64 `json:"average_latency_ns"`
 	AverageTTFTNS    uint64 `json:"average_ttft_ns"`
@@ -504,10 +508,45 @@ func sortedCompactSeries(series map[int64]Counters) []SeriesPoint {
 	return points
 }
 
-func sortedCompactModels(models map[string]Counters) []ModelStats {
+// compactModelAggregate accumulates one upstream model's counters together with
+// the alias clients used to reach it. A model reached through two different
+// aliases has no single correct label, so it keeps an empty alias and the
+// dashboard falls back to the upstream name.
+type compactModelAggregate struct {
+	Counters
+	alias     string
+	ambiguous bool
+}
+
+func (a *compactModelAggregate) observeAlias(alias string) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" || a.ambiguous {
+		return
+	}
+	if a.alias == "" {
+		a.alias = alias
+		return
+	}
+	if a.alias != alias {
+		a.alias = ""
+		a.ambiguous = true
+	}
+}
+
+func compactModelBucket(models map[string]*compactModelAggregate, model string) *compactModelAggregate {
+	aggregate := models[model]
+	if aggregate == nil {
+		aggregate = &compactModelAggregate{}
+		models[model] = aggregate
+	}
+	return aggregate
+}
+
+func sortedCompactModels(models map[string]*compactModelAggregate) []ModelStats {
 	rows := make([]ModelStats, 0, len(models))
-	for model, counters := range models {
-		rows = append(rows, ModelStats{Model: model, Counters: counters, AverageLatencyNS: counters.averageLatencyNS(), AverageTTFTNS: counters.averageTTFTNS()})
+	for model, aggregate := range models {
+		counters := aggregate.Counters
+		rows = append(rows, ModelStats{Model: model, Alias: aggregate.alias, Counters: counters, AverageLatencyNS: counters.averageLatencyNS(), AverageTTFTNS: counters.averageTTFTNS()})
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].TotalTokens != rows[j].TotalTokens {
@@ -521,7 +560,7 @@ func sortedCompactModels(models map[string]Counters) []ModelStats {
 func initialStatsFromFull(stats StatsResponse, queryRange usageRange) InitialStatsResponse {
 	bucketSeconds := compactBucketSeconds(queryRange, stats.RetainedSince, stats.GeneratedAt)
 	series := make(map[int64]Counters)
-	models := make(map[string]Counters)
+	models := make(map[string]*compactModelAggregate)
 	for _, point := range stats.Series {
 		timestamp, err := time.Parse(time.RFC3339, point.Hour)
 		if err != nil {
@@ -533,10 +572,9 @@ func initialStatsFromFull(stats StatsResponse, queryRange usageRange) InitialSta
 		series[bucket] = value
 	}
 	for _, group := range stats.Groups {
-		model := compactModelName(group.Model)
-		value := models[model]
+		value := compactModelBucket(models, compactModelName(group.Model))
 		value.add(group.Counters)
-		models[model] = value
+		value.observeAlias(group.Alias)
 	}
 	return InitialStatsResponse{
 		SchemaVersion: 2,
@@ -605,7 +643,7 @@ func sortedStatsAPIKeys(refs map[string]struct{}, ciphertexts map[string]string)
 func buildInitialStatsForRange(data map[aggregateKey]Counters, since, lastUsed time.Time, queryRange usageRange, filter usageFilter, now time.Time, apiKeyCiphertexts map[string]string) InitialStatsResponse {
 	bucketSeconds := compactBucketSeconds(queryRange, since, now)
 	series := make(map[int64]Counters)
-	models := make(map[string]Counters)
+	models := make(map[string]*compactModelAggregate)
 	sources := make(map[string]struct{})
 	apiKeyRefs := make(map[string]struct{})
 	summary := Counters{}
@@ -628,10 +666,9 @@ func buildInitialStatsForRange(data map[aggregateKey]Counters, since, lastUsed t
 		point := series[seriesKey]
 		point.add(counters)
 		series[seriesKey] = point
-		model := compactModelName(dimensions.Model)
-		modelCounters := models[model]
-		modelCounters.add(counters)
-		models[model] = modelCounters
+		modelAggregate := compactModelBucket(models, compactModelName(dimensions.Model))
+		modelAggregate.add(counters)
+		modelAggregate.observeAlias(dimensions.Alias)
 		summary.add(counters)
 	}
 	sourceValues := make([]string, 0, len(sources))
