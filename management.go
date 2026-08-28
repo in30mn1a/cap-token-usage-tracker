@@ -212,14 +212,14 @@ func (r *pluginRuntime) dispatchManagement(request pluginapi.ManagementRequest, 
 		if request.Method != "" && !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
 		}
-		// The enriched dashboard is the default landing page. API keys are masked
-		// server-side, so only the management actions still need a session.
-		return fullDashboardResponse(), nil
+		// The enriched dashboard is the default landing page and mints its own
+		// full-mode session, so no management key prompt is ever shown.
+		return r.autoSessionDashboardResponse(), nil
 	case routes.fullDashboardPath:
 		if request.Method != "" && !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
 		}
-		return fullDashboardResponse(), nil
+		return r.autoSessionDashboardResponse(), nil
 	case routes.fullModeDataPath:
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil

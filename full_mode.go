@@ -14,7 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const fullModeSessionTTL = 15 * time.Minute
+const fullModeSessionTTL = 24 * time.Hour
 
 const (
 	fullModeUploadTTL       = fullModeSessionTTL
@@ -215,6 +215,17 @@ func (r *pluginRuntime) fullModeSessionResponse() (pluginapi.ManagementResponse,
 		return jsonResponse(http.StatusInternalServerError, map[string]any{"error": "could not create full-mode session"}), nil
 	}
 	return jsonResponse(http.StatusOK, map[string]string{"session": token}), nil
+}
+
+// autoSessionDashboardResponse renders the dashboard with a session already
+// issued. If minting fails the shell still loads; the enriched read paths do not
+// need a session, only the management actions do.
+func (r *pluginRuntime) autoSessionDashboardResponse() pluginapi.ManagementResponse {
+	session, err := r.createFullModeSession()
+	if err != nil {
+		return fullDashboardResponse()
+	}
+	return fullDashboardResponseWithSession(session)
 }
 
 func (r *pluginRuntime) fullModeDataResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {

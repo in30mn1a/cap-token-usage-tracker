@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -380,4 +381,51 @@ func containsSensitiveFullModePayload(body []byte) bool {
 		FullMode bool `json:"full_mode"`
 	}
 	return json.Unmarshal(body, &payload) == nil && payload.FullMode
+}
+
+// TestDashboardShellSeedsAWorkingFullModeSession pins the behaviour that removed
+// the management key prompt: the shell must ship a session that already
+// validates, must not leak the placeholder, and must not render the unlock
+// button any more.
+func TestDashboardShellSeedsAWorkingFullModeSession(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crypto, err := deriveCryptoContext(config.APIKeySecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &pluginRuntime{store: store, config: config, crypto: crypto}
+	defer runtime.shutdown()
+	raw, err := json.Marshal(pluginapi.ManagementRegistrationRequest{ResourceBasePath: "/v0/resource/plugins/test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.registerManagement(raw); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{runtime.routes.dashboardPath, runtime.routes.fullDashboardPath} {
+		request, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: path})
+		response, err := runtime.handleManagement(request)
+		if err != nil || response.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %+v, %v", path, response, err)
+		}
+		body := string(response.Body)
+		if strings.Contains(body, fullModeSessionPlaceholder) {
+			t.Fatalf("%s still contains the session placeholder", path)
+		}
+		if strings.Contains(body, `id="fullModeButton"`) {
+			t.Fatalf("%s still renders the full-mode unlock button", path)
+		}
+		match := regexp.MustCompile(`fullModeSession='([^']+)'`).FindStringSubmatch(body)
+		if match == nil {
+			t.Fatalf("%s does not seed a full-mode session", path)
+		}
+		if !runtime.validFullModeSession(match[1]) {
+			t.Fatalf("%s seeded a session that does not validate", path)
+		}
+	}
 }
