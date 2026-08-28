@@ -12,7 +12,7 @@ const (
 )
 
 var dashboardTimeRangeModes = map[string]struct{}{
-	"custom": {}, "last_5_hours": {}, "last_7_days": {}, "last_30_days": {}, "current_month": {},
+	"custom": {}, "last_5_hours": {}, "last_7_days": {}, "last_30_days": {}, "current_month": {}, "all": {},
 }
 
 type DashboardPreferences struct {

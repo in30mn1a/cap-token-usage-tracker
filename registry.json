@@ -6,12 +6,17 @@
       "name": "CAP Token Usage Tracker (fork)",
       "description": "Fork of AITNR/cap-token-usage-tracker. Date presets include the current day and gain an \"All\" range, the per-request table shows the model alias, model prices resolve through the alias, the full-mode reset route no longer 404s, and the enriched dashboard is the default with API keys masked server-side while management actions still require the management key.",
       "author": "in30mn1a",
-      "version": "2.1.0",
+      "version": "2.1.1",
       "repository": "https://github.com/in30mn1a/cap-token-usage-tracker",
       "logo": "https://raw.githubusercontent.com/in30mn1a/cap-token-usage-tracker/main/log-64x64.png",
       "homepage": "https://github.com/in30mn1a/cap-token-usage-tracker",
       "license": "MIT",
-      "tags": ["Management", "Usage", "Statistics", "Dashboard"]
+      "tags": [
+        "Management",
+        "Usage",
+        "Statistics",
+        "Dashboard"
+      ]
     }
   ]
 }
