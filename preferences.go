@@ -11,6 +11,12 @@ const (
 	defaultTimeRangeMode     = "custom"
 )
 
+// dashboardModelShareMetrics mirrors the data-model-share-metric values of the
+// donut's metric switch; the parity test keeps the two in step.
+var dashboardModelShareMetrics = map[string]struct{}{
+	"requests": {}, "tokens": {}, "cost": {},
+}
+
 // dashboardGranularities mirrors the <option> values of the dashboard's
 // granularity select; the parity test keeps the two in step.
 var dashboardGranularities = map[string]struct{}{
@@ -32,6 +38,8 @@ type DashboardPreferences struct {
 	// Granularity is empty until the reader picks one, which keeps the trend
 	// tracking the selected range instead of pinning a stale choice.
 	Granularity string `json:"granularity,omitempty"`
+	// ModelShareMetric is empty until the reader picks one.
+	ModelShareMetric string `json:"model_share_metric,omitempty"`
 }
 
 var requestColumnKeys = []string{
@@ -84,6 +92,11 @@ func normalizeDashboardPreferences(input DashboardPreferences) (DashboardPrefere
 			return DashboardPreferences{}, fmt.Errorf("granularity is unsupported")
 		}
 	}
+	if metric := input.ModelShareMetric; metric != "" {
+		if _, ok := dashboardModelShareMetrics[metric]; !ok {
+			return DashboardPreferences{}, fmt.Errorf("model_share_metric is unsupported")
+		}
+	}
 	start, end := "", ""
 	if mode == "custom" && (input.TimeRangeStart != "" || input.TimeRangeEnd != "") {
 		if input.TimeRangeStart == "" || input.TimeRangeEnd == "" {
@@ -107,6 +120,7 @@ func normalizeDashboardPreferences(input DashboardPreferences) (DashboardPrefere
 		TimeRangeStart:         start,
 		TimeRangeEnd:           end,
 		Granularity:            input.Granularity,
+		ModelShareMetric:       input.ModelShareMetric,
 	}, nil
 }
 

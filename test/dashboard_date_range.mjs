@@ -4,9 +4,9 @@ import { chromium } from 'playwright-core';
 
 const [htmlPath, chromePath, scenario = 'exclusive'] = process.argv.slice(2);
 if (!htmlPath || !chromePath) {
-  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend|all-range-cold|granularity-persists]');
+  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend|all-range-cold|granularity-persists|share-metric-persists]');
 }
-if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend', 'all-range-cold', 'granularity-persists'].includes(scenario)) {
+if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend', 'all-range-cold', 'granularity-persists', 'share-metric-persists'].includes(scenario)) {
   throw new Error(`unknown dashboard date-range browser scenario: ${scenario}`);
 }
 
@@ -26,7 +26,9 @@ const emptyInitial = {
 // The "All" preset has to resolve to the retained window rather than a fixed
 // far-past date, so this scenario serves a store that started three hours ago
 // and holds a single bucket of traffic.
-const populatedScenario = scenario === 'all-range-trend' || scenario === 'all-range-cold' || scenario === 'granularity-persists';
+const persistenceScenario = scenario === 'granularity-persists' || scenario === 'share-metric-persists';
+const populatedScenario = scenario === 'all-range-trend' || scenario === 'all-range-cold' || persistenceScenario;
+let savedMetric = '';
 // Saved preferences live in the stub for the lifetime of the scenario so a
 // reload can prove the granularity survived the round trip.
 let savedGranularity = '';
@@ -72,11 +74,12 @@ const server = createServer((request, response) => {
     return;
   }
   if (url.pathname === `${resourceBase}/preferences`) {
-    if (scenario === 'granularity-persists') {
+    if (persistenceScenario) {
       if (url.searchParams.get('save') === '1') {
         savedGranularity = url.searchParams.get('granularity') || '';
+        savedMetric = url.searchParams.get('model_share_metric') || '';
       }
-      sendJSON({ time_range_mode: 'all', granularity: savedGranularity });
+      sendJSON({ time_range_mode: 'all', granularity: savedGranularity, model_share_metric: savedMetric });
       return;
     }
     sendJSON(scenario === 'all-range-cold'
@@ -129,6 +132,38 @@ try {
   await page.clock.install({ time: new Date('2026-08-23T12:00:00.000Z') });
   await page.goto(dashboardURL, { waitUntil: 'domcontentloaded' });
   await page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
+
+  if (scenario === 'share-metric-persists') {
+    await page.waitForTimeout(600);
+    const initial = await page.locator('[data-model-share-metric="requests"]').getAttribute('aria-pressed');
+    if (initial !== 'true') {
+      throw new Error(`the donut must default to requests, got aria-pressed=${initial}`);
+    }
+
+    // "cost" is the load-bearing case: syncModelShareMetricButtons downgrades it
+    // to "requests" until the cost payload lands, so a naive restore loses it.
+    for (const metric of ['tokens', 'cost']) {
+      await page.locator(`[data-model-share-metric="${metric}"]`).click();
+      await page.waitForTimeout(600);
+      if (savedMetric !== metric) {
+        throw new Error(`choosing ${metric} must persist it, stub saved ${JSON.stringify(savedMetric)}`);
+      }
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(1200);
+      const pressed = await page.locator(`[data-model-share-metric="${metric}"]`).getAttribute('aria-pressed');
+      if (pressed !== 'true') {
+        throw new Error(`${metric} must survive a reload, got aria-pressed=${pressed}`);
+      }
+    }
+
+    if (pageErrors.length) {
+      throw new Error(`dashboard raised ${pageErrors.length} page error(s): ${pageErrors[0].message}`);
+    }
+    await context.close();
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+    process.exit(0);
+  }
 
   if (scenario === 'granularity-persists') {
     await page.waitForTimeout(600);

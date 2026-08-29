@@ -1020,7 +1020,10 @@ func TestDashboardModelShareMetricSwitch(t *testing.T) {
 		`var metric=button.getAttribute('data-model-share-metric'),unavailable=metric==='cost'&&!currentCosts`,
 		`button.disabled=unavailable`,
 		`function setModelShareMetric(metric)`,
-		`modelShareMetric=metric;renderDonut()`,
+		`modelShareMetric=metric;scheduleDashboardPreferencesSave();renderDonut()`,
+		// A saved "cost" metric stays pending until the cost payload arrives,
+		// because syncModelShareMetricButtons downgrades it until then.
+		"if(pendingShareMetric&&(pendingShareMetric!=='cost'||currentCosts))",
 		`total=visible.reduce(function(sum,item){return sum+modelShareMetricValue(item);},0)`,
 		`var value=modelShareMetricValue(item),percent=total?value/total*100:0`,
 		`main.textContent=formatModelShareMetric(total,true)`,

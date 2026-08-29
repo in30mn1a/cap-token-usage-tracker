@@ -108,3 +108,46 @@ func TestDashboardGranularitiesMatchDashboardSelect(t *testing.T) {
 		t.Fatalf("an unset granularity must be accepted: %v", err)
 	}
 }
+
+// The donut's metric switch declares its values only in the markup, so a new
+// one there has to be accepted by the server or saving it 400s and the reader
+// silently loses the choice on the next load.
+func TestDashboardModelShareMetricsMatchDashboardSwitch(t *testing.T) {
+	const marker = `id="modelShareMetric"`
+	start := strings.Index(dashboardHTML, marker)
+	if start < 0 {
+		t.Fatal("dashboard no longer declares a model share metric switch")
+	}
+	end := strings.Index(dashboardHTML[start:], "</div>")
+	if end < 0 {
+		t.Fatal("model share metric switch is not terminated")
+	}
+	markup := dashboardHTML[start : start+end]
+	metrics := map[string]struct{}{}
+	for _, fragment := range strings.Split(markup, `data-model-share-metric="`)[1:] {
+		value, _, ok := strings.Cut(fragment, `"`)
+		if !ok {
+			continue
+		}
+		metrics[value] = struct{}{}
+	}
+	if len(metrics) == 0 {
+		t.Fatal("could not parse the model share metric switch")
+	}
+	for value := range metrics {
+		if _, ok := dashboardModelShareMetrics[value]; !ok {
+			t.Fatalf("dashboard offers model share metric %q that the server rejects", value)
+		}
+		if _, err := normalizeDashboardPreferences(DashboardPreferences{RequestPageSize: 100, DimensionPageSize: 100, ModelShareMetric: value}); err != nil {
+			t.Fatalf("model share metric %q is rejected: %v", value, err)
+		}
+	}
+	for value := range dashboardModelShareMetrics {
+		if _, ok := metrics[value]; !ok {
+			t.Fatalf("server accepts model share metric %q that the dashboard cannot offer", value)
+		}
+	}
+	if _, err := normalizeDashboardPreferences(DashboardPreferences{RequestPageSize: 100, DimensionPageSize: 100, ModelShareMetric: "latency"}); err == nil {
+		t.Fatal("an unsupported model share metric must be rejected")
+	}
+}
