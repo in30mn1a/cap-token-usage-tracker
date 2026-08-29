@@ -4,9 +4,9 @@ import { chromium } from 'playwright-core';
 
 const [htmlPath, chromePath, scenario = 'exclusive'] = process.argv.slice(2);
 if (!htmlPath || !chromePath) {
-  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend|all-range-cold|granularity-persists|share-metric-persists|refresh-animation]');
+  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend|all-range-cold|granularity-persists|share-metric-persists|refresh-animation|cost-pending]');
 }
-if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend', 'all-range-cold', 'granularity-persists', 'share-metric-persists', 'refresh-animation'].includes(scenario)) {
+if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend', 'all-range-cold', 'granularity-persists', 'share-metric-persists', 'refresh-animation', 'cost-pending'].includes(scenario)) {
   throw new Error(`unknown dashboard date-range browser scenario: ${scenario}`);
 }
 
@@ -27,7 +27,7 @@ const emptyInitial = {
 // far-past date, so this scenario serves a store that started three hours ago
 // and holds a single bucket of traffic.
 const persistenceScenario = scenario === 'granularity-persists' || scenario === 'share-metric-persists';
-const populatedScenario = scenario === 'all-range-trend' || scenario === 'all-range-cold' || persistenceScenario || scenario === 'refresh-animation';
+const populatedScenario = scenario === 'all-range-trend' || scenario === 'all-range-cold' || persistenceScenario || scenario === 'refresh-animation' || scenario === 'cost-pending';
 let savedMetric = '';
 // Saved preferences live in the stub for the lifetime of the scenario so a
 // reload can prove the granularity survived the round trip.
@@ -74,6 +74,12 @@ const server = createServer((request, response) => {
     return;
   }
   if (url.pathname === `${resourceBase}/preferences`) {
+    if (scenario === 'cost-pending') {
+      // A preset range ends at "now", which is what makes the query string --
+      // and therefore the snapshot comparison -- differ on every refresh.
+      sendJSON({ time_range_mode: 'last_7_days' });
+      return;
+    }
     if (persistenceScenario) {
       if (url.searchParams.get('save') === '1') {
         savedGranularity = url.searchParams.get('granularity') || '';
@@ -104,7 +110,15 @@ const server = createServer((request, response) => {
     return;
   }
   if (url.pathname === `${resourceBase}/costs`) {
-    sendJSON({ summary: { requests: 0, priced_requests: 0, unpriced_requests: 0 }, models: [], price_book_revision: 0 });
+    const payload = scenario === 'cost-pending'
+      ? { summary: { requests: 3, priced_requests: 3, unpriced_requests: 0, total_usd: 1.25 }, models: [], series: [], price_book_revision: 4 }
+      : { summary: { requests: 0, priced_requests: 0, unpriced_requests: 0 }, models: [], price_book_revision: 0 };
+    if (scenario === 'cost-pending') {
+      // Delay so the intermediate state is observable at all.
+      setTimeout(() => sendJSON(payload), 700);
+      return;
+    }
+    sendJSON(payload);
     return;
   }
   if (url.pathname === `${resourceBase}/prices`) {
@@ -132,6 +146,48 @@ try {
   await page.clock.install({ time: new Date('2026-08-23T12:00:00.000Z') });
   await page.goto(dashboardURL, { waitUntil: 'domcontentloaded' });
   await page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
+
+  if (scenario === 'cost-pending') {
+    // A cold load has no snapshot to fall back on, but "unavailable" is a
+    // verdict, not a progress report -- the cost only failed if it errored.
+    // The dashboard follows the browser locale, so match every translation.
+    const unavailableText = /Unavailable|不可用|Недоступно/i;
+    const pendingText = /Calculating|计算中|計算中|Вычисление/i;
+    const early = await page.locator('#totalCost').textContent();
+    if (unavailableText.test(early)) {
+      throw new Error(`a cost that is still loading must not read as unavailable, got ${early}`);
+    }
+    if (!pendingText.test(early)) {
+      throw new Error(`a cost that is still loading must say so, got ${early}`);
+    }
+    await page.waitForFunction(() => /\$/.test(document.getElementById('totalCost').textContent), null, { timeout: 5000 });
+
+    // A refresh keeps the previous figure on screen: the render wrapper
+    // substitutes currentCosts whenever the new payload has not arrived. This
+    // guards that pre-existing behaviour, which is why the cold load above is
+    // the only place the reader ever sees a pending cost.
+    const settled = await page.locator('#totalCost').textContent();
+    const seen = [];
+    await page.evaluate(() => { window.__costTexts = []; const node = document.getElementById('totalCost');
+      window.__costObserver = new MutationObserver(() => window.__costTexts.push(node.textContent));
+      window.__costObserver.observe(node, { childList: true, characterData: true, subtree: true }); });
+    await page.locator('#refreshButton').click();
+    await page.waitForTimeout(2500);
+    const during = await page.evaluate(() => { window.__costObserver.disconnect(); return window.__costTexts; });
+    seen.push(...during);
+    const regressed = seen.filter((text) => unavailableText.test(text) || pendingText.test(text));
+    if (regressed.length) {
+      throw new Error(`a refresh must keep the previous cost on screen, saw ${JSON.stringify(seen)} (settled was ${settled})`);
+    }
+
+    if (pageErrors.length) {
+      throw new Error(`dashboard raised ${pageErrors.length} page error(s): ${pageErrors[0].message}`);
+    }
+    await context.close();
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+    process.exit(0);
+  }
 
   if (scenario === 'refresh-animation') {
     await page.waitForTimeout(1200);

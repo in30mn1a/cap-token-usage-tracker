@@ -119,3 +119,7 @@ func TestDashboardModelShareMetricSurvivesReloadInBrowser(t *testing.T) {
 func TestDashboardRefreshDoesNotReplayValueAnimationInBrowser(t *testing.T) {
 	runDashboardDateRangeBrowserTest(t, "refresh-animation", "dashboard refresh animation browser regression failed")
 }
+
+func TestDashboardCostShowsPendingNotUnavailableInBrowser(t *testing.T) {
+	runDashboardDateRangeBrowserTest(t, "cost-pending", "dashboard cost pending-state browser regression failed")
+}
