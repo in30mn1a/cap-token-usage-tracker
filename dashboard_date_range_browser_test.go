@@ -115,3 +115,7 @@ func TestDashboardGranularityChoiceSurvivesReloadInBrowser(t *testing.T) {
 func TestDashboardModelShareMetricSurvivesReloadInBrowser(t *testing.T) {
 	runDashboardDateRangeBrowserTest(t, "share-metric-persists", "dashboard model share metric persistence browser regression failed")
 }
+
+func TestDashboardRefreshDoesNotReplayValueAnimationInBrowser(t *testing.T) {
+	runDashboardDateRangeBrowserTest(t, "refresh-animation", "dashboard refresh animation browser regression failed")
+}

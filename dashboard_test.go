@@ -1321,3 +1321,18 @@ func TestAggregateViewsLabelModelsByAlias(t *testing.T) {
 		t.Fatal("the missing-price list must keep the upstream model name")
 	}
 }
+
+// A single refresh runs renderVisuals several times as the stats, price book,
+// cost, request and dimension payloads land. Without this guard each pass
+// replays the entry animation on every summary card, which reads as a twitch.
+// The browser regression counts the replays, but it skips without Chrome, so
+// keep a cheap contract check that CI always runs.
+func TestDashboardSkipsValueAnimationWhenUnchanged(t *testing.T) {
+	const required = "function animateText(id,value){var node=document.getElementById(id);if(!node)return;if(node.textContent===value)return;"
+	if !strings.Contains(dashboardHTML, required) {
+		t.Fatalf("animateText must leave an unchanged value alone: %q", required)
+	}
+	if !strings.Contains(dashboardHTML, ".animate{animation:value-in") {
+		t.Fatal("dashboard no longer declares the value entry animation")
+	}
+}

@@ -4,9 +4,9 @@ import { chromium } from 'playwright-core';
 
 const [htmlPath, chromePath, scenario = 'exclusive'] = process.argv.slice(2);
 if (!htmlPath || !chromePath) {
-  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend|all-range-cold|granularity-persists|share-metric-persists]');
+  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|all-range-trend|all-range-cold|granularity-persists|share-metric-persists|refresh-animation]');
 }
-if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend', 'all-range-cold', 'granularity-persists', 'share-metric-persists'].includes(scenario)) {
+if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'all-range-trend', 'all-range-cold', 'granularity-persists', 'share-metric-persists', 'refresh-animation'].includes(scenario)) {
   throw new Error(`unknown dashboard date-range browser scenario: ${scenario}`);
 }
 
@@ -27,7 +27,7 @@ const emptyInitial = {
 // far-past date, so this scenario serves a store that started three hours ago
 // and holds a single bucket of traffic.
 const persistenceScenario = scenario === 'granularity-persists' || scenario === 'share-metric-persists';
-const populatedScenario = scenario === 'all-range-trend' || scenario === 'all-range-cold' || persistenceScenario;
+const populatedScenario = scenario === 'all-range-trend' || scenario === 'all-range-cold' || persistenceScenario || scenario === 'refresh-animation';
 let savedMetric = '';
 // Saved preferences live in the stub for the lifetime of the scenario so a
 // reload can prove the granularity survived the round trip.
@@ -132,6 +132,47 @@ try {
   await page.clock.install({ time: new Date('2026-08-23T12:00:00.000Z') });
   await page.goto(dashboardURL, { waitUntil: 'domcontentloaded' });
   await page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
+
+  if (scenario === 'refresh-animation') {
+    await page.waitForTimeout(1200);
+    // One refresh renders three times as the stats, price book and cost
+    // payloads land. Replaying the entry animation on an unchanged number
+    // makes the summary cards twitch, so count the replays across a refresh
+    // that returns identical data.
+    const counted = await page.evaluate(() => new Promise((resolve) => {
+      const ids = ['totalTokens', 'totalCost', 'requests', 'topModel'];
+      const replays = {};
+      const observers = ids.map((id) => {
+        replays[id] = 0;
+        const node = document.getElementById(id);
+        if (!node) return null;
+        const observer = new MutationObserver((records) => {
+          records.forEach((record) => {
+            if (record.attributeName === 'class' && node.classList.contains('animate')) replays[id] += 1;
+          });
+        });
+        observer.observe(node, { attributes: true, attributeFilter: ['class'] });
+        return observer;
+      });
+      document.getElementById('refreshButton').click();
+      setTimeout(() => {
+        observers.forEach((observer) => observer && observer.disconnect());
+        resolve(replays);
+      }, 2500);
+    }));
+    const twitchy = Object.entries(counted).filter(([, count]) => count > 0);
+    if (twitchy.length) {
+      throw new Error(`a refresh with unchanged values must not replay the entry animation, got ${JSON.stringify(counted)}`);
+    }
+
+    if (pageErrors.length) {
+      throw new Error(`dashboard raised ${pageErrors.length} page error(s): ${pageErrors[0].message}`);
+    }
+    await context.close();
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+    process.exit(0);
+  }
 
   if (scenario === 'share-metric-persists') {
     await page.waitForTimeout(600);
