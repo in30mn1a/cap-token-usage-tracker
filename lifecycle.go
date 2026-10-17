@@ -262,10 +262,10 @@ func pluginRegistration(schemaVersion uint32) registration {
 	return registration{
 		SchemaVersion: schemaVersion,
 		Metadata: pluginapi.Metadata{
-			Name:             "CAP Token Usage Tracker",
+			Name:             "CAP Token Usage Tracker (fork)",
 			Version:          version,
-			Author:           "AITNR",
-			GitHubRepository: "https://github.com/AITNR/cap-token-usage-tracker",
+			Author:           "in30mn1a",
+			GitHubRepository: "https://github.com/in30mn1a/cap-token-usage-tracker",
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "data_path", Type: pluginapi.ConfigFieldTypeString, Description: "bbolt database path; defaults to the data directory next to the discovered plugins directory, while explicit relative paths use the CLIProxyAPI working directory."},
 				{Name: "retention_days", Type: pluginapi.ConfigFieldTypeInteger, Description: "Number of UTC days of minute-level statistics and request details to retain (1-3650)."},
