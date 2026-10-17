@@ -276,6 +276,8 @@
   "trend.zoomIn.title": "Zoom in",
   "modelShare.chart.aria": "Model usage doughnut chart",
   "modelShare.legend.aria": "Model legend",
+  "modelShare.legend.expand": "Show {count} more",
+  "modelShare.legend.collapse": "Collapse",
   "cost.chart.aria": "Estimated cost trend line chart",
   "efficiency.chart.aria": "Model efficiency scatter chart",
   "requestTable.aria": "Request details table",

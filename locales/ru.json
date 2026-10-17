@@ -276,6 +276,8 @@
   "trend.zoomIn.title": "Увеличить",
   "modelShare.chart.aria": "Кольцевая диаграмма доли моделей",
   "modelShare.legend.aria": "Легенда моделей",
+  "modelShare.legend.expand": "Показать ещё {count}",
+  "modelShare.legend.collapse": "Свернуть",
   "cost.chart.aria": "График тренда стоимости",
   "efficiency.chart.aria": "Точечная диаграмма эффективности моделей",
   "requestTable.aria": "Таблица деталей запросов",

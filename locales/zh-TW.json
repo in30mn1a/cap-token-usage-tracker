@@ -276,6 +276,8 @@
   "trend.zoomIn.title": "放大",
   "modelShare.chart.aria": "模型調用佔比環形圖",
   "modelShare.legend.aria": "模型圖例",
+  "modelShare.legend.expand": "展開其餘 {count} 個",
+  "modelShare.legend.collapse": "收起",
   "cost.chart.aria": "預估費用趨勢折線圖",
   "efficiency.chart.aria": "模型效率散點圖",
   "requestTable.aria": "請求明細表格",
