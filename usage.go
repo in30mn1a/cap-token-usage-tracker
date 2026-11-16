@@ -149,9 +149,10 @@ func sanitizeServiceURL(value string) string {
 	return strings.TrimRight(parsed.String(), "/")
 }
 
+var authTypeSeparators = strings.NewReplacer("_", "", "-", "", " ", "")
+
 func isAPIKeyAuth(value string) bool {
-	normalized := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(value)))
-	return normalized == "apikey"
+	return authTypeSeparators.Replace(strings.ToLower(strings.TrimSpace(value))) == "apikey"
 }
 
 func sameSecret(left, right string) bool {

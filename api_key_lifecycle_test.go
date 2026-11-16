@@ -195,7 +195,7 @@ func TestReconfigureCryptoIdentityRollsBackWithFailedCandidateFlush(t *testing.T
 	actor := &storeActor{
 		db:                   db,
 		config:               config,
-		data:                 make(map[aggregateKey]Counters),
+		data:                 newAggregateIndex(),
 		dirty:                make(map[aggregateKey]struct{}),
 		modelPrices:          make(map[string]ModelPrice),
 		dashboardPreferences: defaultDashboardPreferences(),

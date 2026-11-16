@@ -122,6 +122,14 @@ type costSnapshotResult struct {
 	snapshot costQuerySnapshot
 	err      error
 }
+type costChangesCommand struct {
+	since uint64
+	resp  chan costChangesResult
+}
+type costChangesResult struct {
+	changes costChanges
+	err     error
+}
 type preferencesQueryCommand struct{ resp chan preferencesResult }
 type savePreferencesCommand struct {
 	preferences DashboardPreferences
@@ -214,6 +222,8 @@ type Store struct {
 	costOrder        []costCacheKey
 	costFlights      map[costCacheKey]*costFlight
 	costScanHook     func()
+	costScanMu       sync.Mutex
+	costMemo         *costMemo
 	closed           bool
 	closeErr         error
 	cryptoMu         sync.RWMutex
@@ -222,11 +232,16 @@ type Store struct {
 }
 
 type storeActor struct {
-	db                   *bolt.DB
-	config               Config
-	crypto               cryptoContext
-	data                 map[aggregateKey]Counters
-	dirty                map[aggregateKey]struct{}
+	db     *bolt.DB
+	config Config
+	crypto cryptoContext
+	data   *aggregateIndex
+	dirty  map[aggregateKey]struct{}
+	// touched maps a minute to the newest request sequence recorded into it
+	// since the last reload, so cost queries can refresh only those minutes.
+	touched map[int64]uint64
+	// prunedBefore is the retention cutoff applied by the last prune.
+	prunedBefore         int64
 	since                time.Time
 	lastUsed             time.Time
 	pending              int
@@ -270,7 +285,7 @@ func openStoreWithCrypto(config Config, crypto cryptoContext) (*Store, error) {
 		db:                   db,
 		config:               config,
 		crypto:               crypto,
-		data:                 make(map[aggregateKey]Counters),
+		data:                 newAggregateIndex(),
 		dirty:                make(map[aggregateKey]struct{}),
 		dashboardPreferences: defaultDashboardPreferences(),
 		apiKeyCiphertexts:    make(map[string]string),
@@ -601,6 +616,9 @@ func (s *Store) RestoreBackup(backup []byte) error {
 		s.costOrder = nil
 		s.costFlights = make(map[costCacheKey]*costFlight)
 		s.costMu.Unlock()
+		s.costScanMu.Lock()
+		s.costMemo = nil
+		s.costScanMu.Unlock()
 	}
 	return result.err
 }
@@ -630,29 +648,6 @@ func (s *Store) run(actor *storeActor) {
 				item.resp <- actor.record(item.usage)
 			case queryCommand:
 				now := time.Now().UTC()
-				if requiresExactStats(item.queryRange) {
-					if err := actor.flush(now, true); err != nil {
-						actor.lastFlushErr = err
-						item.resp <- queryResult{err: err}
-						continue
-					}
-					stats, err := actor.queryExactStats(item.queryRange, item.filter, now)
-					if err != nil {
-						item.resp <- queryResult{err: err}
-						continue
-					}
-					switch item.mode {
-					case statsQueryInitial:
-						item.resp <- queryResult{initial: initialStatsFromFull(stats, item.queryRange)}
-					case statsQueryTrend:
-						item.resp <- queryResult{trend: trendStatsFromFull(stats, item.queryRange)}
-					case statsQueryGroups:
-						item.resp <- queryResult{groups: GroupStatsPage{SchemaVersion: 2, GeneratedAt: stats.GeneratedAt, Range: stats.Range, Items: stats.Groups, Total: len(stats.Groups)}}
-					default:
-						item.resp <- queryResult{stats: stats}
-					}
-					continue
-				}
 				if err := actor.retryFailedFlush(now); err != nil {
 					item.resp <- queryResult{err: err}
 					continue
@@ -661,21 +656,24 @@ func (s *Store) run(actor *storeActor) {
 					item.resp <- queryResult{err: withStatus(400, "%v", err)}
 					continue
 				}
+				view, err := actor.view(item.queryRange, now)
+				if err != nil {
+					item.resp <- queryResult{err: err}
+					continue
+				}
 				switch item.mode {
 				case statsQueryInitial:
-					item.resp <- queryResult{initial: buildInitialStatsForRange(actor.data, actor.since, actor.lastUsed, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)}
+					item.resp <- queryResult{initial: view.initialStats(actor.since, actor.lastUsed, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)}
 				case statsQueryTrend:
-					item.resp <- queryResult{trend: buildStatsTrendForRange(actor.data, actor.since, item.queryRange, item.filter, now)}
+					item.resp <- queryResult{trend: view.trendStats(actor.since, item.queryRange, item.filter, now)}
 				case statsQueryGroups:
-					item.resp <- queryResult{groups: buildGroupsForRange(actor.data, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)}
+					item.resp <- queryResult{groups: view.groupStats(item.queryRange, item.filter, now, actor.apiKeyCiphertexts)}
 				default:
-					stats := buildStatsForRangeWithFilter(actor.data, actor.since, actor.lastUsed, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)
-					item.resp <- queryResult{stats: stats}
+					item.resp <- queryResult{stats: view.stats(actor.since, actor.lastUsed, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)}
 				}
 			case requestQueryCommand:
 				now := time.Now().UTC()
-				if err := actor.flush(now, true); err != nil {
-					actor.lastFlushErr = err
+				if err := actor.flushPending(now); err != nil {
 					item.resp <- requestQueryResult{err: err}
 					continue
 				}
@@ -702,16 +700,14 @@ func (s *Store) run(actor *storeActor) {
 				response, err := actor.applyModelPriceSync(item.prices, item.settings, item.metadata, item.expectedRevision)
 				item.resp <- priceQueryResult{response: response, err: err}
 			case observedModelsCommand:
-				if err := actor.flush(item.now, true); err != nil {
-					actor.lastFlushErr = err
+				if err := actor.flushPending(item.now); err != nil {
 					item.resp <- observedModelsResult{err: err}
 					continue
 				}
 				item.resp <- observedModelsResult{models: actor.observedModels(item.now)}
 			case costSnapshotCommand:
 				now := time.Now().UTC()
-				if err := actor.flush(now, true); err != nil {
-					actor.lastFlushErr = err
+				if err := actor.flushPending(now); err != nil {
 					item.resp <- costSnapshotResult{err: err}
 					continue
 				}
@@ -727,7 +723,20 @@ func (s *Store) run(actor *storeActor) {
 					HighWater:     actor.nextRequestSeq,
 					Generation:    actor.costGeneration,
 					Filter:        item.filter,
+					Since:         actor.since,
 				}, err: err}
+			case costChangesCommand:
+				if err := actor.flushPending(time.Now().UTC()); err != nil {
+					item.resp <- costChangesResult{err: err}
+					continue
+				}
+				changes := costChanges{HighWater: actor.nextRequestSeq, PriceRevision: actor.priceRevision, Generation: actor.costGeneration, PrunedBefore: actor.prunedBefore}
+				for minute, sequence := range actor.touched {
+					if sequence > item.since {
+						changes.Minutes = append(changes.Minutes, minute)
+					}
+				}
+				item.resp <- costChangesResult{changes: changes}
 			case resetCommand:
 				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
 					item.resp <- resetResult{err: err}
@@ -845,14 +854,19 @@ func (a *storeActor) initialize() error {
 	a.generations = generations
 	a.activeGeneration = activeGeneration
 
-	return a.reload()
+	if err := a.reload(); err != nil {
+		return err
+	}
+	a.prunedBefore = retentionCutoff(a.config, now)
+	return nil
 }
 
 // reload loads actor state from the current database handle without creating
 // buckets, migrating schema, or mutating on-disk data.
 func (a *storeActor) reload() error {
-	a.data = make(map[aggregateKey]Counters)
+	a.data = newAggregateIndex()
 	a.dirty = make(map[aggregateKey]struct{})
+	a.touched = make(map[int64]uint64)
 	a.pending = 0
 	a.pendingRequests = nil
 	a.lastFlushErr = nil
@@ -967,7 +981,7 @@ func (a *storeActor) reload() error {
 				if err := json.Unmarshal(counterValue, &counters); err != nil {
 					return fmt.Errorf("decode counters: %w", err)
 				}
-				a.data[aggregateKey{Hour: hour, Dimensions: dimensions}] = counters
+				a.data.set(aggregateKey{Hour: hour, Dimensions: dimensions}, counters)
 				if ref := apiKeyRef(dimensions.APIKeyGeneration, dimensions.APIKeyHash); ref != "" {
 					retainedHashes[ref] = struct{}{}
 				}
@@ -976,7 +990,7 @@ func (a *storeActor) reload() error {
 		}); err != nil {
 			return err
 		}
-		return requests.ForEach(func(_, value []byte) error {
+		return requests.ForEach(func(key, value []byte) error {
 			if value == nil {
 				return errors.New("request bucket contains nested bucket")
 			}
@@ -990,6 +1004,9 @@ func (a *storeActor) reload() error {
 			}
 			if ref != "" {
 				retainedHashes[ref] = struct{}{}
+			}
+			if len(key) == 16 {
+				a.data.countRecord(requestAggregateKey(decodeInt64(key[:8]), request.Dimensions))
 			}
 			return nil
 		})
@@ -1417,8 +1434,8 @@ func validateAPIKeyLabels(labels map[string]string) error {
 
 func (a *storeActor) retainedAPIKeyRefs() map[string]struct{} {
 	refs := make(map[string]struct{})
-	for key := range a.data {
-		if ref := apiKeyRef(key.Dimensions.APIKeyGeneration, key.Dimensions.APIKeyHash); ref != "" {
+	for _, dimensions := range a.data.retainedDimensions() {
+		if ref := apiKeyRef(dimensions.APIKeyGeneration, dimensions.APIKeyHash); ref != "" {
 			refs[ref] = struct{}{}
 		}
 	}
@@ -1667,7 +1684,7 @@ func migrateRestoreDatabase(path string, config Config, crypto cryptoContext) er
 		db:                   db,
 		config:               config,
 		crypto:               crypto,
-		data:                 make(map[aggregateKey]Counters),
+		data:                 newAggregateIndex(),
 		dirty:                make(map[aggregateKey]struct{}),
 		dashboardPreferences: defaultDashboardPreferences(),
 		apiKeyCiphertexts:    make(map[string]string),
@@ -2019,14 +2036,17 @@ func (a *storeActor) record(usage normalizedUsage) error {
 		Hour:       usage.RequestedAt.UTC().Truncate(time.Minute).Unix(),
 		Dimensions: aggregateDimensions,
 	}
-	counters := a.data[key]
-	counters.add(countersForUsage(usage))
-	a.data[key] = counters
+	a.data.add(key, countersForUsage(usage))
+	a.data.countRecord(key)
 	a.dirty[key] = struct{}{}
 	a.nextRequestSeq++
 	if a.nextRequestSeq == 0 {
 		a.nextRequestSeq = 1
 	}
+	if a.touched == nil {
+		a.touched = make(map[int64]uint64)
+	}
+	a.touched[key.Hour] = a.nextRequestSeq
 	a.pendingRequests = append(a.pendingRequests, requestDetailForUsage(usage, a.nextRequestSeq))
 	if ref := apiKeyRef(aggregateDimensions.APIKeyGeneration, aggregateDimensions.APIKeyHash); ciphertext != "" && ref != "" {
 		a.apiKeyCiphertexts[ref] = ciphertext
@@ -2041,6 +2061,16 @@ func (a *storeActor) record(usage normalizedUsage) error {
 		return a.lastFlushErr
 	}
 	return nil
+}
+
+// flushPending writes buffered usage before a read that goes to the database.
+// Unlike a forced flush it costs no write transaction when nothing is buffered.
+func (a *storeActor) flushPending(now time.Time) error {
+	if len(a.dirty) == 0 && len(a.pendingRequests) == 0 {
+		return nil
+	}
+	a.lastFlushErr = a.flush(now, true)
+	return a.lastFlushErr
 }
 
 func (a *storeActor) retryFailedFlush(now time.Time) error {
@@ -2082,7 +2112,7 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 			if err != nil {
 				return err
 			}
-			counters, err := json.Marshal(a.data[key])
+			counters, err := json.Marshal(a.data.get(key))
 			if err != nil {
 				return err
 			}
@@ -2153,11 +2183,13 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 	a.lastFlushErr = nil
 	if shouldPrune {
 		a.since = nextSince
-		for key := range a.data {
-			if key.Hour < cutoff {
-				delete(a.data, key)
+		a.data.prune(cutoff)
+		for minute := range a.touched {
+			if minute < cutoff {
+				delete(a.touched, minute)
 			}
 		}
+		a.prunedBefore = cutoff
 		a.lastPruneAt = now
 		a.apiKeyCiphertexts = nextCiphertexts
 		a.apiKeyLabels = nextLabels
@@ -2351,12 +2383,8 @@ func (a *storeActor) persistPriceBook(prices map[string]ModelPrice, settings Pri
 func (a *storeActor) observedModels(now time.Time) []string {
 	seen := make(map[string]struct{})
 	cutoff := retentionCutoff(a.config, now)
-	for key := range a.data {
-		if key.Hour < cutoff {
-			continue
-		}
-		model := strings.TrimSpace(key.Dimensions.Model)
-		if model != "" {
+	for _, dimensions := range a.data.retainedDimensionsSince(cutoff) {
+		if model := strings.TrimSpace(dimensions.Model); model != "" {
 			seen[model] = struct{}{}
 		}
 	}
@@ -2412,8 +2440,9 @@ func (a *storeActor) reset() error {
 	}); err != nil {
 		return fmt.Errorf("reset database: %w", err)
 	}
-	a.data = make(map[aggregateKey]Counters)
+	a.data = newAggregateIndex()
 	a.dirty = make(map[aggregateKey]struct{})
+	a.touched = make(map[int64]uint64)
 	a.pending = 0
 	a.pendingRequests = nil
 	a.nextRequestSeq = 0
@@ -2463,44 +2492,91 @@ func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, mod
 		Limit:             limit,
 		Items:             make([]RequestDetail, 0, limit),
 	}
+	matches := func(dimensions Dimensions) bool {
+		if !matchesModelFilter(dimensions.Model, dimensions.Alias, model) || !filter.matches(dimensions) {
+			return false
+		}
+		return !(resultFilter == "success" && dimensions.Failed) && !(resultFilter == "failed" && !dimensions.Failed)
+	}
+
+	// Whole minutes are counted from the in-memory index, so only the minutes
+	// that hold the requested page are read and decoded. Partial minutes at
+	// the range bounds are always read.
+	window := windowForRange(queryRange)
+	type segment struct {
+		low, high int64
+		matched   int
+		partial   bool
+	}
+	var newest, whole, oldest []segment
+	for _, edge := range window.edges {
+		item := segment{low: edge[0].UnixNano(), high: edge[1].UnixNano(), partial: true}
+		if edge[0].Unix() >= window.to {
+			newest = append(newest, item)
+		} else {
+			oldest = append(oldest, item)
+		}
+	}
+	matcher := aggregateView{index: a.data}.matcher(matches)
+	a.data.eachMinute(window.from, window.to, func(minute int64, cells []aggregateCell) {
+		matched := 0
+		for index := range cells {
+			if cells[index].records > 0 && matcher.match(cells[index].dim) {
+				matched += int(cells[index].records)
+			}
+		}
+		if matched > 0 {
+			whole = append(whole, segment{low: minute * int64(time.Second), high: (minute + 60) * int64(time.Second), matched: matched})
+		}
+	})
+	sort.Slice(whole, func(i, j int) bool { return whole[i].low > whole[j].low })
+	segments := append(append(newest, whole...), oldest...)
+
+	skipped := 0
 	err := a.db.View(func(tx *bolt.Tx) error {
 		requests := tx.Bucket(requestsBucket)
 		if requests == nil {
 			return errors.New("requests bucket is missing")
 		}
-		cursor := requests.Cursor()
-		for key, value := cursor.Last(); key != nil; key, value = cursor.Prev() {
-			if len(key) != 16 || value == nil {
-				continue
+		for _, current := range segments {
+			if !current.partial {
+				page.Total += current.matched
+				if len(page.Items) >= limit {
+					continue
+				}
+				if skipped+current.matched <= offset {
+					skipped += current.matched
+					continue
+				}
 			}
-			requestedAt := time.Unix(0, decodeInt64(key[:8])).UTC()
-			if !queryRange.End.IsZero() && !requestedAt.Before(queryRange.End) {
-				continue
+			err := scanRequestsDescending(requests, current.low, current.high, func(value []byte) (bool, error) {
+				var item RequestDetail
+				if err := json.Unmarshal(value, &item); err != nil {
+					return false, fmt.Errorf("decode request detail: %w", err)
+				}
+				item.Dimensions = sanitizeDimensionsSource(item.Dimensions)
+				if !matches(item.Dimensions) {
+					return true, nil
+				}
+				if current.partial {
+					page.Total++
+				}
+				if skipped < offset {
+					skipped++
+					return true, nil
+				}
+				if len(page.Items) >= limit {
+					// A partial minute is still counted to its end.
+					return current.partial, nil
+				}
+				cost := estimateRequestCostWithResolver(item, resolver)
+				item.EstimatedCost = &cost
+				page.Items = append(page.Items, item)
+				return true, nil
+			})
+			if err != nil {
+				return err
 			}
-			if !queryRange.Start.IsZero() && requestedAt.Before(queryRange.Start) {
-				break
-			}
-			var item RequestDetail
-			if err := json.Unmarshal(value, &item); err != nil {
-				return fmt.Errorf("decode request detail: %w", err)
-			}
-			item.Dimensions = sanitizeDimensionsSource(item.Dimensions)
-			if !matchesModelFilter(item.Model, item.Alias, model) {
-				continue
-			}
-			if !filter.matches(item.Dimensions) {
-				continue
-			}
-			if (resultFilter == "success" && item.Failed) || (resultFilter == "failed" && !item.Failed) {
-				continue
-			}
-			page.Total++
-			if page.Total <= offset || len(page.Items) >= limit {
-				continue
-			}
-			cost := estimateRequestCostWithResolver(item, resolver)
-			item.EstimatedCost = &cost
-			page.Items = append(page.Items, item)
 		}
 		return nil
 	})
@@ -2510,60 +2586,107 @@ func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, mod
 	return page, nil
 }
 
+// requestAggregateKey is the aggregate cell a request-log row belongs to.
+func requestAggregateKey(unixNano int64, dimensions Dimensions) aggregateKey {
+	dimensions.APIKey = ""
+	return aggregateKey{Hour: time.Unix(0, unixNano).UTC().Truncate(time.Minute).Unix(), Dimensions: dimensions}
+}
+
+// scanRequests visits the request-log rows in [low, high) oldest first.
+func scanRequests(requests *bolt.Bucket, low, high int64, visit func(unixNano int64, value []byte) error) error {
+	cursor := requests.Cursor()
+	for key, value := cursor.Seek(encodeRequestKey(low, 0)); key != nil; key, value = cursor.Next() {
+		if len(key) != 16 || value == nil {
+			continue
+		}
+		unixNano := decodeInt64(key[:8])
+		if unixNano >= high {
+			break
+		}
+		if err := visit(unixNano, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// scanRequestsDescending visits the request-log rows in [low, high) newest
+// first until visit returns false.
+func scanRequestsDescending(requests *bolt.Bucket, low, high int64, visit func(value []byte) (bool, error)) error {
+	cursor := requests.Cursor()
+	key, value := cursor.Seek(encodeRequestKey(high, 0))
+	if key == nil {
+		key, value = cursor.Last()
+	} else {
+		key, value = cursor.Prev()
+	}
+	for ; key != nil; key, value = cursor.Prev() {
+		if len(key) != 16 || value == nil {
+			continue
+		}
+		if decodeInt64(key[:8]) < low {
+			break
+		}
+		more, err := visit(value)
+		if err != nil || !more {
+			return err
+		}
+	}
+	return nil
+}
+
 func requiresExactStats(queryRange usageRange) bool {
 	return queryRange.Name == "custom" &&
 		(queryRange.Start.Second() != 0 || queryRange.Start.Nanosecond() != 0 ||
 			queryRange.End.Second() != 0 || queryRange.End.Nanosecond() != 0)
 }
 
-func (a *storeActor) queryExactStats(queryRange usageRange, filter usageFilter, now time.Time) (StatsResponse, error) {
-	if err := queryRange.validate(); err != nil {
-		return StatsResponse{}, withStatus(400, "%v", err)
+// view resolves a query range against the minute aggregates. Whole minutes are
+// answered from memory; a bound that falls inside a minute is answered from
+// the request log, so second-precision ranges stay exact without rescanning
+// the whole range.
+func (a *storeActor) view(queryRange usageRange, now time.Time) (aggregateView, error) {
+	view := aggregateView{index: a.data, window: windowForRange(queryRange)}
+	if len(view.window.edges) == 0 {
+		return view, nil
 	}
-	data := make(map[aggregateKey]Counters)
+	if err := a.flushPending(now); err != nil {
+		return aggregateView{}, err
+	}
 	err := a.db.View(func(tx *bolt.Tx) error {
 		requests := tx.Bucket(requestsBucket)
 		if requests == nil {
 			return errors.New("requests bucket is missing")
 		}
-		cursor := requests.Cursor()
-		for key, value := cursor.Last(); key != nil; key, value = cursor.Prev() {
-			if len(key) != 16 || value == nil {
-				continue
+		for _, edge := range view.window.edges {
+			err := scanRequests(requests, edge[0].UnixNano(), edge[1].UnixNano(), func(unixNano int64, value []byte) error {
+				var item RequestDetail
+				if err := json.Unmarshal(value, &item); err != nil {
+					return fmt.Errorf("decode request detail: %w", err)
+				}
+				counters := item.Counters
+				if item.LatencyNS > 0 {
+					counters.TotalLatencyNS = item.LatencyNS
+					counters.LatencySamples = 1
+				}
+				if item.TTFTNS > 0 {
+					counters.TotalTTFTNS = item.TTFTNS
+					counters.TTFTSamples = 1
+				}
+				key := requestAggregateKey(unixNano, item.Dimensions)
+				view.edges = append(view.edges, edgeAggregate{minute: key.Hour, dim: a.data.intern(key.Dimensions), counters: counters})
+				return nil
+			})
+			if err != nil {
+				return err
 			}
-			requestedAt := time.Unix(0, decodeInt64(key[:8])).UTC()
-			if !requestedAt.Before(queryRange.End) {
-				continue
-			}
-			if requestedAt.Before(queryRange.Start) {
-				break
-			}
-			var item RequestDetail
-			if err := json.Unmarshal(value, &item); err != nil {
-				return fmt.Errorf("decode request detail: %w", err)
-			}
-			dimensions := sanitizeDimensionsSource(item.Dimensions)
-			dimensions.APIKey = ""
-			counters := item.Counters
-			if item.LatencyNS > 0 {
-				counters.TotalLatencyNS = item.LatencyNS
-				counters.LatencySamples = 1
-			}
-			if item.TTFTNS > 0 {
-				counters.TotalTTFTNS = item.TTFTNS
-				counters.TTFTSamples = 1
-			}
-			bucket := aggregateKey{Hour: requestedAt.Truncate(time.Minute).Unix(), Dimensions: dimensions}
-			combined := data[bucket]
-			combined.add(counters)
-			data[bucket] = combined
 		}
 		return nil
 	})
 	if err != nil {
-		return StatsResponse{}, fmt.Errorf("query exact stats: %w", err)
+		return aggregateView{}, fmt.Errorf("query exact stats: %w", err)
 	}
-	return buildStatsForRangeWithFilter(data, a.since, a.lastUsed, usageRange{Name: queryRange.Name}, filter, now, a.apiKeyCiphertexts), nil
+	return view, nil
 }
 
 func retentionCutoff(config Config, now time.Time) int64 {

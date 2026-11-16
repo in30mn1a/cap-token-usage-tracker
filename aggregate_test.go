@@ -279,19 +279,7 @@ func TestInitialStatsModelsCarryAlias(t *testing.T) {
 		t.Fatalf("unaliased model gained alias %q", got)
 	}
 
-	// The persisted path rebuilds the compact rollup from the dimension rows.
-	stats, err := buildStats(data, now.Add(-30*24*time.Hour), now, "24h", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	compact := initialStatsFromFull(stats, queryRange)
-	for _, row := range compact.Models {
-		if row.Model == "moonshotai/kimi-k3" && row.Alias != "nv/kimi-k3" {
-			t.Fatalf("compact rollup alias = %q, want nv/kimi-k3", row.Alias)
-		}
-	}
-
-	body, err := json.Marshal(compact)
+	body, err := json.Marshal(initial)
 	if err != nil {
 		t.Fatal(err)
 	}

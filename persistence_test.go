@@ -534,7 +534,7 @@ func TestStoreDoesNotDropRecordsAfterFlushFailure(t *testing.T) {
 			FlushMaxRecords: 100,
 			SyncOnRecord:    true,
 		},
-		data:  make(map[aggregateKey]Counters),
+		data:  newAggregateIndex(),
 		dirty: make(map[aggregateKey]struct{}),
 		since: now,
 	}
@@ -560,7 +560,7 @@ func TestStoreDoesNotDropRecordsAfterFlushFailure(t *testing.T) {
 	_ = store.Close()
 
 	key := aggregateKey{Hour: now.Truncate(time.Minute).Unix(), Dimensions: usage.Dimensions}
-	if got := actor.data[key].Requests; got != 2 {
+	if got := actor.data.get(key).Requests; got != 2 {
 		t.Fatalf("accepted requests = %d, want 2", got)
 	}
 	if actor.pending != 2 || len(actor.dirty) != 1 {
